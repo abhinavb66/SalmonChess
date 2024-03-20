@@ -1,0 +1,2 @@
+# SalmonChess
+A basic chessbot
