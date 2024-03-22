@@ -4,7 +4,8 @@
 #This class handles communication with the GUI through the UCI protocol
 #Built by Abhinav Brahmarouthu
 
-import chess, sys
+import chess
+import minimax
 
 VERSION = "0.1"
 
@@ -49,9 +50,9 @@ while True:
 
     #Start calculating current position
     elif(arg[0] == "go"):
-        calc = 1
+        move = minimax.bestmove(board)
 
-    #Stop calculating current postition and return best move
-    elif(arg[0] == "stop"):
-        move = 1
+ #   #Stop calculating current postition and return best move
+ #   elif(arg[0] == "stop"):
+ #       move = 1
     
