@@ -28,7 +28,7 @@ while True:
 
     #respond to ready check
     elif(arg[0] == "isready"):
-        return("readyok")
+        print("readyok")
     
     #handle internal parameter change requests
     elif(arg[0] == "setoption"):
