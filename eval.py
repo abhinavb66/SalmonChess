@@ -29,7 +29,7 @@ pTableW = [
     10, 10, 20, 30, 30, 20, 10, 10,
     75, 100, 75, 65, 65, 75, 100, 75,
     0, 0, 0, 0, 0, 0, 0, 0]
-pTableB = reversed(pTableW)
+pTableB = list(reversed(pTableW))
 
 nTableW = [
     -50, -40, -30, -30, -30, -30, -40, -50,
@@ -40,7 +40,7 @@ nTableW = [
     -30, 5, 25, 35, 35, 25, 5, -30,
     -40, -20, 0, 5, 5, 0, -20, -40,
     -50, -40, -30, -30, -30, -30, -40, -50]
-nTableB = reversed(nTableW)
+nTableB = list(reversed(nTableW))
 
 bTableW = [
     -20, -10, -10, -10, -10, -10, -10, -20,
@@ -51,7 +51,7 @@ bTableW = [
     -10, 0, 5, 10, 10, 5, 0, -10,
     -10, 0, 0, 0, 0, 0, 0, -10,
     -20, -10, -10, -10, -10, -10, -10, -20]
-btableB = reversed(bTableW)
+bTableB = list(reversed(bTableW))
 
 rTableW = [
     0, 0, 0, 5, 5, 0, 0, 0,
@@ -62,7 +62,7 @@ rTableW = [
     -5, 0, 0, 0, 0, 0, 0, -5,
     5, 10, 10, 10, 10, 10, 10, 5,
     0, 0, 0, 0, 0, 0, 0, 0]
-rTableB = reversed(rTableW)
+rTableB = list(reversed(rTableW))
 
 qTable = [
     -20, -10, -10, -5, -5, -10, -10, -20,
@@ -84,7 +84,26 @@ kTableW = [
     -30, -40, -40, -50, -50, -40, -40, -30,
     -30, -40, -40, -50, -50, -40, -40, -30,
     -30, -40, -40, -50, -50, -40, -40, -30]
-kTableB = reversed(kTableW)
+kTableB = list(reversed(kTableW))
+
+#Dictionaries contianing piece table values for each color
+wTable = {
+    chess.PAWN: pTableW,
+    chess.KNIGHT: nTableW,
+    chess.BISHOP: bTableW,
+    chess.ROOK: rTableW,
+    chess.QUEEN: qTable,
+    chess.KING: kTableW
+}
+
+bTable = {
+    chess.PAWN: pTableB,
+    chess.KNIGHT: nTableB,
+    chess.BISHOP: bTableB,
+    chess.ROOK: rTableB,
+    chess.QUEEN: qTable,
+    chess.KING: kTableB
+}
 
 #Evaluation functions
 
@@ -92,15 +111,34 @@ kTableB = reversed(kTableW)
 def eval_board(board):
     total = 0
 
+    pieces = board.piece_map()
+    for square in pieces:
+        piece = board.piece_at(square)
+        sign = 1 if piece.color == chess.WHITE else -1
+        table = wTable[piece.piece_type] if sign == 1 else bTable[piece.piece_type]
+        total += sign * (pieceVals[piece.piece_type] + table[square])
+    
     return total
 
 #Evaluates the change in position value from a move
+#Assumes move is legal
 def eval_move(bosrd, move):
     total = 0
+
+    #TODO
+    #Check for capture and calc capured piece value loss
+    #Subtrace from piece value
+    #Add to piece value
+    #Do i need to consider promotions?
+
 
     return total
 
 #Determines if the position is an endgame or not
+#TODO
 def endGame(board):
     val = False
+
+    pieces = board.piece_map()
+
     return val
