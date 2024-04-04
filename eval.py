@@ -121,18 +121,36 @@ def eval_board(board):
     return total
 
 #Evaluates the change in position value from a move
-#Assumes move is legal
-def eval_move(bosrd, move):
-    total = 0
+#Assumes move is legal, board is position before move is made
+def eval_move(board, move):
+    delta = 0
 
-    #TODO
-    #Check for capture and calc capured piece value loss
-    #Subtrace from piece value
-    #Add to piece value
-    #Do i need to consider promotions?
+    #Subtract value for piece leaving previous square
+    piece = board.piece_at(move.from_square)
+    sign = 1 if piece.color == chess.WHITE else -1
+    table = wTable[piece.piece_type] if sign == 1 else bTable[piece.piece_type]
+    delta -= sign * table[move.from_square]
 
+    #Additional steps for a promotion
+    if move.promotion is not None:
+        delta -= sign * pieceVals[chess.PAWN]
+        promoPiece = move.promotion
+        promoTable = wTable[promoPiece.piece_type] if sign == 1 else bTable[promoPiece.piece_type]
+        delta += sign * (pieceVals[promoPiece] + promoTable[move.to_square])
+    else: #Else add value for piece going to new square
+        delta += sign * table[move.to_square]
 
-    return total
+    #Handle captures:
+    if board.is_en_passant(move):
+        captureSquare = (move.to_square - 8) if sign == 1 else (move.to_square + 8) #Square of captured pawn
+        captureTable = pTableB if sign == 1 else pTableW
+        delta += sign * (pieceVals[chess.PAWN] + captureTable[captureSquare])
+    elif board.is_capture(move):
+        capturePiece = board.piece_at(move.to_square)
+        captureTable = wTable[promoPiece.piece_type] if sign == -1 else bTable[promoPiece.piece_type]
+        delta += sign * (pieceVals[capturePiece.piece_type] + captureTable[move.to_square])
+
+    return delta
 
 #Determines if the position is an endgame or not
 #TODO
