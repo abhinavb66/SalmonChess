@@ -4,17 +4,23 @@
 #This class handles communication with the GUI through the UCI protocol
 #Built by Abhinav Brahmarouthu
 
+import sys
 import chess
 import minimax
 
 VERSION = "0.1"
 
-board = chess.board()   #new board, change later to accept board from GUI
+sys.stdout.reconfigure(line_buffering=True)
+
+board = chess.Board()   #new board, change later to accept board from GUI
 depth = 10;             #Constant depth for testing, change later
 
 #main loop to monitor for commands from GUI
 while True:
-    arg = input().split()
+    line = input()
+    if not line:
+        continue
+    arg = line.split()
 
     #Respond to request for engine info
     if(arg[0] == "uci"):
@@ -29,7 +35,7 @@ while True:
     #respond to ready check
     elif(arg[0] == "isready"):
         print("readyok")
-    
+
     #handle internal parameter change requests
     elif(arg[0] == "setoption"):
         if(arg[2] == "depth"):
@@ -39,20 +45,18 @@ while True:
     elif(arg[0] == "position"):
         if(arg[1] == "startpos"):
             board.reset()
+            moves_start = 2
         elif(arg[1] == "fen"):
             board.set_fen(" ".join(arg[2:8]))
+            moves_start = 8
         else:
-            break #bad command
-        
-        start = arg.index("moves")
-        for move in arg[start+1:]:
-            board.uci_push(move)
+            continue #bad command
+
+        if len(arg) > moves_start and arg[moves_start] == "moves":
+            for move in arg[moves_start + 1:]:
+                board.push_uci(move)
 
     #Start calculating current position
     elif(arg[0] == "go"):
-        move = minimax.bestmove(board)
-
- #   #Stop calculating current postition and return best move
- #   elif(arg[0] == "stop"):
- #       move = 1
-    
+        move = minimax.bestMove(board, depth=depth)
+        print(f"bestmove {move}")
