@@ -142,9 +142,10 @@ async function newGame() {
   const mode = $('#mode').val();
   const human_color = $('#human-color').val();
   const movetime_ms = parseInt($('#movetime').val(), 10) || 1000;
+  const engine_id = $('#engine').val();
   const s = await api('/api/new_game', {
     method: 'POST',
-    body: JSON.stringify({ mode, human_color, movetime_ms }),
+    body: JSON.stringify({ mode, human_color, movetime_ms, engine_id }),
   });
   renderState(s);
   triggerEngineIfNeeded();
@@ -193,6 +194,16 @@ $(function () {
   });
   $themeSelect.val(currentTheme);
   $themeSelect.on('change', () => applyTheme($themeSelect.val()));
+
+  // Populate engine selector from server
+  const $engineSelect = $('#engine');
+  api('/api/engines').then(engines => {
+    engines.forEach(({ id, label }) => {
+      $engineSelect.append(`<option value="${id}">${label}</option>`);
+    });
+  }).catch(() => {
+    $engineSelect.append('<option value="salmon">SalmonChess</option>');
+  });
 
   applyTheme(currentTheme);
   $('#new-game').on('click', () => newGame().catch(e => $status.text(e.message)));

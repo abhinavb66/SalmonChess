@@ -1,5 +1,6 @@
 """Flask server for the SalmonChess local web UI."""
 
+import json
 import os
 import sys
 import threading
@@ -16,6 +17,34 @@ from uci_client import UCIClient  # noqa: E402
 app = Flask(__name__)
 _lock = threading.Lock()
 
+ENGINES_JSON = os.path.join(os.path.dirname(__file__), "engines.json")
+BUILTIN_CMD = [sys.executable, "-u", os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "Salmon.py")
+)]
+
+
+def _load_engines():
+    with open(ENGINES_JSON) as f:
+        return json.load(f)
+
+
+def _cmd_for_engine(engine_id):
+    """Return the subprocess cmd list for the given engine id."""
+    engines = _load_engines()
+    for e in engines:
+        if e["id"] == engine_id:
+            if e.get("type") == "builtin":
+                return BUILTIN_CMD
+            elif e.get("type") == "external":
+                path = e.get("path", "")
+                if not path:
+                    raise ValueError(f"engine '{engine_id}' has no path configured")
+                return [path]
+            else:
+                raise ValueError(f"unknown engine type: {e.get('type')}")
+    raise ValueError(f"engine '{engine_id}' not found in engines.json")
+
+
 state = {
     "board": chess.Board(),
     "mode": "human_vs_engine",   # human_vs_engine | human_vs_human | engine_vs_engine
@@ -23,6 +52,7 @@ state = {
     "history": [],               # UCI move strings
     "engine_white": None,        # UCIClient or None
     "engine_black": None,        # UCIClient or None
+    "engine_id": "salmon",       # active engine id
     "movetime_ms": 1000,
 }
 
@@ -41,16 +71,17 @@ def _shutdown_engines():
 def _start_engines():
     """Spawn whichever engine subprocesses the current mode needs."""
     _shutdown_engines()
+    cmd = _cmd_for_engine(state["engine_id"])
     mode = state["mode"]
     if mode == "human_vs_engine":
         engine_color = chess.BLACK if state["human_color"] == chess.WHITE else chess.WHITE
         if engine_color == chess.WHITE:
-            state["engine_white"] = UCIClient()
+            state["engine_white"] = UCIClient(cmd=cmd)
         else:
-            state["engine_black"] = UCIClient()
+            state["engine_black"] = UCIClient(cmd=cmd)
     elif mode == "engine_vs_engine":
-        state["engine_white"] = UCIClient()
-        state["engine_black"] = UCIClient()
+        state["engine_white"] = UCIClient(cmd=list(cmd))
+        state["engine_black"] = UCIClient(cmd=list(cmd))
 
 
 def _engine_for_turn():
@@ -91,6 +122,7 @@ def _state_payload():
         "turn": "w" if board.turn == chess.WHITE else "b",
         "mode": state["mode"],
         "human_color": "w" if state["human_color"] == chess.WHITE else "b",
+        "engine_id": state["engine_id"],
         "is_check": board.is_check(),
         "is_game_over": board.is_game_over(),
         "result": _result_string(board),
@@ -107,6 +139,16 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/api/engines", methods=["GET"])
+def api_engines():
+    """Return the list of available engines from engines.json."""
+    try:
+        engines = _load_engines()
+        return jsonify([{"id": e["id"], "label": e["label"]} for e in engines])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/state", methods=["GET"])
 def api_state():
     with _lock:
@@ -118,6 +160,7 @@ def api_new_game():
     data = request.get_json(silent=True) or {}
     mode = data.get("mode", "human_vs_engine")
     human_color_str = data.get("human_color", "w")
+    engine_id = data.get("engine_id", state["engine_id"])
     fen = data.get("fen")
     movetime_ms = int(data.get("movetime_ms", 1000))
 
@@ -134,6 +177,7 @@ def api_new_game():
             state["board"] = chess.Board()
         state["mode"] = mode
         state["human_color"] = chess.WHITE if human_color_str == "w" else chess.BLACK
+        state["engine_id"] = engine_id
         state["history"] = []
         state["movetime_ms"] = movetime_ms
         try:
@@ -210,7 +254,6 @@ def api_undo():
         board = state["board"]
         if not state["history"]:
             return jsonify(_state_payload())
-        # In HvE, pop twice so the human's previous move is back on the board for them.
         pops = 2 if state["mode"] == "human_vs_engine" and len(state["history"]) >= 2 else 1
         for _ in range(pops):
             if state["history"]:
