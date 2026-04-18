@@ -1,6 +1,13 @@
+// To add a new piece set: drop its 12 PNGs (wK wQ wR wB wN wP bK bQ bR bB bN bP)
+// into UI/static/img/<key>/ and add an entry here.
+const PIECE_THEMES = {
+  default: { label: 'Default', path: '/static/img/default/{piece}.png' },
+};
+
 let board = null;
 let currentState = null;
 let engineLoopRunning = false;
+let currentTheme = 'default';
 
 const $status = $('#status');
 const $evalNumber = $('#eval-number');
@@ -161,15 +168,33 @@ async function loadFen() {
   }
 }
 
-$(function () {
+function applyTheme(key) {
+  currentTheme = key;
+  const theme = PIECE_THEMES[key];
+  if (board) {
+    board.destroy();
+    board = null;
+  }
   board = Chessboard('board', {
     draggable: true,
-    position: 'start',
-    pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/website/img/chesspieces/wikipedia/{piece}.png',
+    position: currentState ? currentState.fen : 'start',
+    pieceTheme: theme.path,
     onDragStart,
     onDrop,
     onSnapEnd,
   });
+}
+
+$(function () {
+  // Populate piece theme selector
+  const $themeSelect = $('#piece-theme');
+  Object.entries(PIECE_THEMES).forEach(([key, { label }]) => {
+    $themeSelect.append(`<option value="${key}">${label}</option>`);
+  });
+  $themeSelect.val(currentTheme);
+  $themeSelect.on('change', () => applyTheme($themeSelect.val()));
+
+  applyTheme(currentTheme);
   $('#new-game').on('click', () => newGame().catch(e => $status.text(e.message)));
   $('#load-fen').on('click', () => loadFen());
   refreshState().catch(e => $status.text(e.message));
