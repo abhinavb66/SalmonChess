@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SalmonChess</title>
+<link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="layout">
+  <div class="board-wrap">
+    <div id="board"></div>
+    <div id="status" class="status"></div>
+  </div>
+  <div class="sidebar">
+    <h1>SalmonChess</h1>
+
+    <div class="panel">
+      <label>Mode
+        <select id="mode">
+          <option value="human_vs_engine">Human vs Engine</option>
+          <option value="human_vs_human">Human vs Human</option>
+          <option value="engine_vs_engine">Engine vs Engine</option>
+        </select>
+      </label>
+      <label>Your side
+        <select id="human-color">
+          <option value="w">White</option>
+          <option value="b">Black</option>
+        </select>
+      </label>
+      <label>Engine movetime (ms)
+        <input id="movetime" type="number" value="1000" min="100" step="100">
+      </label>
+      <button id="new-game">New Game</button>
+    </div>
+
+    <div class="panel">
+      <label>FEN
+        <input id="fen-input" type="text" placeholder="paste FEN to load...">
+      </label>
+      <button id="load-fen">Load FEN</button>
+    </div>
+
+    <div class="panel">
+      <div class="eval-label">Eval: <span id="eval-number">+0.00</span></div>
+      <div class="eval-bar"><div id="eval-fill" class="eval-fill"></div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Moves</h3>
+      <ol id="move-list"></ol>
+    </div>
+  </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
