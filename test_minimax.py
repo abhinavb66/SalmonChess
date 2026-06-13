@@ -41,7 +41,7 @@ def _plain_negamax(board, depth, ply=0):
     if term is not None:
         return term
     if depth == 0:
-        return minimax.quiescence(board, -minimax.INF, minimax.INF, ply)
+        return minimax.quiescence(board, -minimax.INF, minimax.INF, ply, delta=False)
     best = -minimax.INF
     for move in board.legal_moves:
         board.push(move)
@@ -62,7 +62,8 @@ def test_alpha_beta_equals_minimax():
     ]
     for board, max_depth in cases:
         for depth in range(1, max_depth + 1):
-            ab = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0)
+            #delta=False keeps the search exact so it must match plain minimax.
+            ab = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0, delta=False)
             ref = _plain_negamax(board.copy(), depth)
             assert ab == ref, f"depth {depth} {board.fen()}: alpha-beta {ab} != minimax {ref}"
 
@@ -75,9 +76,32 @@ def test_quiescence_equals_unpruned():
         chess.Board("4k3/8/3n4/4P3/2B5/8/8/4K3 w - - 0 1"),            # minor-piece captures
     ]
     for board in positions:
-        pruned = minimax.quiescence(board.copy(), -minimax.INF, minimax.INF, 0)
+        #delta=False so quiescence stays exact and must match the reference.
+        pruned = minimax.quiescence(board.copy(), -minimax.INF, minimax.INF, 0, delta=False)
         ref = _ref_quiescence(board.copy(), 0)
         assert pruned == ref, f"{board.fen()}: pruned {pruned} != unpruned {ref}"
+
+
+#Delta pruning is a heuristic optimization: it must reduce the nodes searched
+#while still finding the right move on tactical positions.
+def test_delta_pruning_reduces_nodes():
+    #Capture-rich middlegame position.
+    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1")
+    minimax.nodes = 0
+    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=False)
+    nodes_exact = minimax.nodes
+    minimax.nodes = 0
+    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=True)
+    nodes_delta = minimax.nodes
+    assert nodes_delta < nodes_exact, f"delta pruning did not cut nodes ({nodes_delta} vs {nodes_exact})"
+
+
+def test_delta_pruning_keeps_tactics():
+    #Delta pruning (on by default) must not cause the engine to miss a clear win.
+    free_queen = chess.Board("4k3/8/8/3q4/8/8/8/3QK3 w - - 0 1")
+    assert minimax.bestMove(free_queen, depth=3, time=math.inf) == "d1d5"
+    mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
+    assert minimax.bestMove(mate, depth=3, time=math.inf) == "a1a8"
 
 
 def test_finds_mate_in_one():
