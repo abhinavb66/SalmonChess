@@ -192,11 +192,11 @@ def eval_move(board, move):
     #Additional steps for a promotion
     if move.promotion is not None:
         delta -= sign * pieceVals[chess.PAWN]
-        promoPiece = move.promotion
+        promoPiece = move.promotion  #python-chess promotion is a PieceType int, not a Piece
         if sign == 1:
-            promoTable = wEndTable[promoPiece.piece_type] if isEndGame else wTable[promoPiece.piece_type]
+            promoTable = wEndTable[promoPiece] if isEndGame else wTable[promoPiece]
         else:
-            promoTable = bEndTable[promoPiece.piece_type] if isEndGame else bTable[promoPiece.piece_type]
+            promoTable = bEndTable[promoPiece] if isEndGame else bTable[promoPiece]
         delta += sign * (pieceVals[promoPiece] + promoTable[move.to_square])
     else: #Else add value for piece going to new square
         delta += sign * table[move.to_square]
