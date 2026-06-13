@@ -1,19 +1,30 @@
 #Gauntlet harness: estimate SalmonChess's playing strength by playing it against
-#Stockfish pinned to fixed UCI_Elo anchors, then computing a performance rating.
+#Stockfish pinned to fixed UCI_Elo anchors over UCI, then computing a performance
+#rating.
 #
-#Both engines are driven over UCI via python-chess. Results are appended to a
-#JSONL file after every game so the run is resumable across restarts: rerun
-#`python3 gauntlet.py` and it continues where it left off. Run
-#`python3 gauntlet.py report` at any time to summarize the results so far.
+#Games run in parallel across worker processes (default: one per CPU core). Each
+#game result is appended (under a lock) to a single JSONL file, so the run is
+#resumable across restarts: rerun `python3 gauntlet.py` and it continues with
+#only the not-yet-played games. Run `python3 gauntlet.py report` at any time to
+#summarize results so far.
 #
-#Config can be overridden with env vars (used for quick sanity runs):
+#Salmon uses a FIXED DEPTH by default so its strength is independent of CPU
+#contention when many workers saturate the cores (a time budget would search
+#fewer nodes under load and bias the estimate low). Set GAUNTLET_SALMON_TIME to
+#use a time control instead.
+#
+#Config via env vars:
 #  GAUNTLET_ANCHORS="1320,1500,1700,1900"  GAUNTLET_GAMES=25
-#  GAUNTLET_SALMON_TIME=3.0  GAUNTLET_SF_TIME=0.3  GAUNTLET_MAX_PLIES=200
+#  GAUNTLET_WORKERS=<cpu count>            GAUNTLET_MAX_PLIES=200
+#  GAUNTLET_SALMON_DEPTH=6                 GAUNTLET_SALMON_TIME=<seconds, overrides depth>
+#  GAUNTLET_SF_TIME=0.3
 
 import json
 import math
 import os
+import queue
 import sys
+import multiprocessing as mp
 
 import chess
 import chess.engine
@@ -25,12 +36,20 @@ RESULTS = os.path.join(HERE, "gauntlet_results.jsonl")
 
 ANCHORS = [int(x) for x in os.environ.get("GAUNTLET_ANCHORS", "1320,1500,1700,1900").split(",")]
 GAMES_PER_ANCHOR = int(os.environ.get("GAUNTLET_GAMES", "25"))
-SALMON_TIME = float(os.environ.get("GAUNTLET_SALMON_TIME", "3.0"))
-SF_TIME = float(os.environ.get("GAUNTLET_SF_TIME", "0.3"))
+WORKERS = int(os.environ.get("GAUNTLET_WORKERS", str(os.cpu_count() or 1)))
 MAX_PLIES = int(os.environ.get("GAUNTLET_MAX_PLIES", "200"))
+SF_TIME = float(os.environ.get("GAUNTLET_SF_TIME", "0.3"))
+SALMON_DEPTH = int(os.environ.get("GAUNTLET_SALMON_DEPTH", "6"))
+SALMON_TIME = os.environ.get("GAUNTLET_SALMON_TIME")        #if set, overrides depth
 
 _MATERIAL = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
              chess.ROOK: 5, chess.QUEEN: 9}
+
+
+def _salmon_limit():
+    if SALMON_TIME is not None:
+        return chess.engine.Limit(time=float(SALMON_TIME))
+    return chess.engine.Limit(depth=SALMON_DEPTH)
 
 
 #Adjudicate a game that hit the ply cap by material balance (>= 4 pawns wins).
@@ -71,6 +90,35 @@ def play_game(salmon, stockfish, salmon_white, salmon_limit, sf_limit):
     return score, board.ply(), term
 
 
+#Worker process: drain tasks from the queue, append each result under the lock.
+def _worker(task_q, lock):
+    salmon = chess.engine.SimpleEngine.popen_uci(SALMON)
+    stockfish = chess.engine.SimpleEngine.popen_uci(STOCKFISH)
+    salmon_limit = _salmon_limit()
+    sf_limit = chess.engine.Limit(time=SF_TIME)
+    try:
+        while True:
+            try:
+                anchor, gidx = task_q.get_nowait()
+            except queue.Empty:
+                break
+            stockfish.configure({"UCI_LimitStrength": True, "UCI_Elo": anchor})
+            salmon_white = (gidx % 2 == 0)
+            score, plies, term = play_game(salmon, stockfish, salmon_white,
+                                           salmon_limit, sf_limit)
+            line = json.dumps({"anchor": anchor, "salmon_white": salmon_white,
+                               "score": score, "plies": plies, "term": term})
+            with lock:
+                with open(RESULTS, "a") as f:
+                    f.write(line + "\n")
+            print(f"  vs {anchor}  game {gidx + 1}/{GAMES_PER_ANCHOR}  "
+                  f"salmon={'W' if salmon_white else 'B'}  score={score}  "
+                  f"{plies}p {term}", flush=True)
+    finally:
+        salmon.quit()
+        stockfish.quit()
+
+
 def _completed_counts():
     counts = {}
     if os.path.exists(RESULTS):
@@ -78,35 +126,37 @@ def _completed_counts():
             for line in f:
                 line = line.strip()
                 if line:
-                    counts[json.loads(line)["anchor"]] = counts.get(json.loads(line)["anchor"], 0) + 1
+                    a = json.loads(line)["anchor"]
+                    counts[a] = counts.get(a, 0) + 1
     return counts
 
 
 def run():
-    print(f"Salmon {SALMON_TIME}s/move vs Stockfish @ UCI_Elo {ANCHORS}, "
-          f"{GAMES_PER_ANCHOR} games/anchor (SF {SF_TIME}s/move, cap {MAX_PLIES} plies)")
+    control = f"time {SALMON_TIME}s/move" if SALMON_TIME is not None else f"depth {SALMON_DEPTH}"
     done = _completed_counts()
-    salmon = chess.engine.SimpleEngine.popen_uci(SALMON)
-    stockfish = chess.engine.SimpleEngine.popen_uci(STOCKFISH)
-    salmon_limit = chess.engine.Limit(time=SALMON_TIME)
-    sf_limit = chess.engine.Limit(time=SF_TIME)
-    try:
-        for anchor in ANCHORS:
-            stockfish.configure({"UCI_LimitStrength": True, "UCI_Elo": anchor})
-            start = done.get(anchor, 0)
-            for g in range(start, GAMES_PER_ANCHOR):
-                salmon_white = (g % 2 == 0)        #alternate colors
-                score, plies, term = play_game(salmon, stockfish, salmon_white,
-                                               salmon_limit, sf_limit)
-                with open(RESULTS, "a") as f:
-                    f.write(json.dumps({"anchor": anchor, "salmon_white": salmon_white,
-                                        "score": score, "plies": plies, "term": term}) + "\n")
-                print(f"  vs {anchor}  game {g + 1}/{GAMES_PER_ANCHOR}  "
-                      f"salmon={'W' if salmon_white else 'B'}  score={score}  "
-                      f"{plies}p {term}", flush=True)
-    finally:
-        salmon.quit()
-        stockfish.quit()
+    tasks = []
+    for anchor in ANCHORS:
+        for gidx in range(done.get(anchor, 0), GAMES_PER_ANCHOR):
+            tasks.append((anchor, gidx))
+
+    n_workers = max(1, min(WORKERS, len(tasks)))
+    print(f"Salmon ({control}) vs Stockfish @ UCI_Elo {ANCHORS}, "
+          f"{GAMES_PER_ANCHOR} games/anchor (SF {SF_TIME}s/move, cap {MAX_PLIES} plies)")
+    print(f"{len(tasks)} games to play across {n_workers} workers "
+          f"({sum(done.values())} already done)")
+    if not tasks:
+        report()
+        return
+
+    task_q = mp.Queue()
+    for t in tasks:
+        task_q.put(t)
+    lock = mp.Lock()
+    procs = [mp.Process(target=_worker, args=(task_q, lock)) for _ in range(n_workers)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
     report()
 
 
@@ -139,7 +189,6 @@ def report():
         s = sum(scores)
         p = s / n
         perf = _perf(p, anchor)
-        #95% CI on the score rate -> Elo band.
         se = math.sqrt(max(p * (1 - p), 1e-9) / n)
         lo, hi = _perf(p - 1.96 * se, anchor), _perf(p + 1.96 * se, anchor)
         perfs.append(perf)
