@@ -145,40 +145,43 @@ bEndTable = {
 
 #Evaluation functions
 
+#Total non-pawn, non-king material on the board (centipawns), used to decide the
+#game phase. The search also tracks this incrementally.
+def nonpawn_material(board):
+    return sum(pieceVals[p.piece_type] for p in board.piece_map().values()
+               if p.piece_type != chess.PAWN and p.piece_type != chess.KING)
+
 #Determines if the position is an endgame or not.
 #Endgame when total non-pawn, non-king material on the board is <= 1300 cp
 #(roughly two minor pieces + one rook).
 def endGame(board):
-    minorMajorTypes = {chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN}
-    materialTotal = sum(
-        pieceVals[p.piece_type]
-        for p in board.piece_map().values()
-        if p.piece_type in minorMajorTypes
-    )
-    return materialTotal <= 1300
+    return nonpawn_material(board) <= 1300
 
 #Evaluates a position and returns a float. + value is good for white, - for black
 def eval_board(board):
-    total = 0
-    isEndGame = endGame(board)
-
     pieces = board.piece_map()
-    for square in pieces:
-        piece = board.piece_at(square)
-        sign = 1 if piece.color == chess.WHITE else -1
-        if sign == 1:
+    #One scan: material first (to pick the phase), then the piece-square sum.
+    mat = sum(pieceVals[p.piece_type] for p in pieces.values()
+              if p.piece_type != chess.PAWN and p.piece_type != chess.KING)
+    isEndGame = mat <= 1300
+
+    total = 0
+    for square, piece in pieces.items():
+        if piece.color == chess.WHITE:
             table = wEndTable[piece.piece_type] if isEndGame else wTable[piece.piece_type]
+            total += pieceVals[piece.piece_type] + table[square]
         else:
             table = bEndTable[piece.piece_type] if isEndGame else bTable[piece.piece_type]
-        total += sign * (pieceVals[piece.piece_type] + table[square])
+            total -= pieceVals[piece.piece_type] + table[square]
 
     return total
 
 #Evaluates the change in position value from a move
-#Assumes move is legal, board is position before move is made
-def eval_move(board, move):
+#Assumes move is legal, board is position before move is made.
+#is_endgame may be supplied to skip recomputing the game phase.
+def eval_move(board, move, is_endgame=None):
     delta = 0
-    isEndGame = endGame(board)
+    isEndGame = endGame(board) if is_endgame is None else is_endgame
 
     #Subtract value for piece leaving previous square
     piece = board.piece_at(move.from_square)

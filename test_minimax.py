@@ -58,6 +58,7 @@ def test_alpha_beta_equals_minimax():
         (chess.Board(), 3),                                                       # start
         (chess.Board("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"), 3),            # sparse endgame
         (chess.Board("4k3/8/4p3/3Q4/8/8/8/4K3 w - - 0 1"), 3),                    # live recapture
+        (chess.Board("3rk3/8/8/8/8/5P2/8/3RKN2 w - - 0 1"), 3),                   # captures cross the endgame phase
         (chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"), 2),
     ]
     for board, max_depth in cases:
@@ -141,6 +142,47 @@ def test_tt_finds_mate_with_correct_distance():
     #With the TT on (via bestMove), the back-rank mate is still found.
     mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
     assert minimax.bestMove(mate, depth=4, time=math.inf) == "a1a8"
+
+
+#The search threads eval/material incrementally; they must stay equal to a full
+#recompute across whole random games (captures, promotions, castling, en
+#passant, and crossing the endgame phase boundary).
+def test_incremental_eval_and_material_consistency():
+    import random
+    random.seed(2)
+    for _ in range(50):
+        board = chess.Board()
+        ev, mat = eval.eval_board(board), eval.nonpawn_material(board)
+        for _ in range(60):
+            if board.is_game_over():
+                break
+            move = random.choice(list(board.legal_moves))
+            ev_c, mat_c = minimax._child_eval_mat(board, move, ev, mat,
+                                                  mat <= minimax.ENDGAME_MATERIAL)
+            board.push(move)
+            if ev_c is None:
+                ev_c = eval.eval_board(board)
+            assert ev_c == eval.eval_board(board), f"ev desync after {move.uci()}: {board.fen()}"
+            assert mat_c == eval.nonpawn_material(board), f"mat desync after {move.uci()}"
+            ev, mat = ev_c, mat_c
+
+
+#The incrementally maintained piece-placement Zobrist key must equal a full
+#recompute after every move.
+def test_zobrist_incremental_consistency():
+    import random
+    random.seed(1)
+    for _ in range(50):
+        board = chess.Board()
+        pkey = minimax._zobrist_pieces(board)
+        for _ in range(60):
+            if board.is_game_over():
+                break
+            move = random.choice(list(board.legal_moves))
+            pkey ^= minimax._piece_key_delta(board, move)
+            board.push(move)
+            assert pkey == minimax._zobrist_pieces(board), \
+                f"piece-key desync after {move.uci()}: {board.fen()}"
 
 
 def test_finds_mate_in_one():
