@@ -10,14 +10,38 @@ import eval
 import minimax
 
 
-#Reference: plain negamax with no pruning, sharing the same terminal/leaf
-#logic as the real search. Alpha-beta must return the identical value.
+#Reference: quiescence with no alpha-beta pruning, mirroring minimax.quiescence.
+def _ref_quiescence(board, ply=0):
+    term = minimax._evaluate_terminal(board, ply)
+    if term is not None:
+        return term
+    if board.is_check():
+        best = -minimax.INF
+        for move in board.legal_moves:
+            board.push(move)
+            best = max(best, -_ref_quiescence(board, ply + 1))
+            board.pop()
+        return best
+    best = minimax._sign(board) * eval.eval_board(board)
+    for move in board.legal_moves:
+        if board.is_capture(move) or move.promotion is not None:
+            board.push(move)
+            best = max(best, -_ref_quiescence(board, ply + 1))
+            board.pop()
+    return best
+
+
+#Reference: plain negamax with no negamax-level pruning. Its leaf calls the
+#real quiescence with a full window, which returns the exact quiescence value;
+#by the alpha-beta composition theorem the pruned negamax must match this. Using
+#the (fast, pruned) quiescence here keeps the reference tractable, while
+#quiescence's own pruning is verified separately against _ref_quiescence.
 def _plain_negamax(board, depth, ply=0):
     term = minimax._evaluate_terminal(board, ply)
     if term is not None:
         return term
     if depth == 0:
-        return minimax._sign(board) * eval.eval_board(board)
+        return minimax.quiescence(board, -minimax.INF, minimax.INF, ply)
     best = -minimax.INF
     for move in board.legal_moves:
         board.push(move)
@@ -26,19 +50,34 @@ def _plain_negamax(board, depth, ply=0):
     return best
 
 
-#The core correctness guard: pruning must not change the search value.
+#Guard 1: negamax alpha-beta pruning must not change the search value.
+#Depth caps are per-position so the un-pruned reference stays fast in pure
+#Python: sparse positions go to depth 3, the dense (many-move) one to depth 2.
 def test_alpha_beta_equals_minimax():
-    positions = [
-        chess.Board(),                                                   # start
-        chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"),
-        chess.Board("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"),        # endgame
-        chess.Board("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+    cases = [
+        (chess.Board(), 3),                                                       # start
+        (chess.Board("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"), 3),            # sparse endgame
+        (chess.Board("4k3/8/4p3/3Q4/8/8/8/4K3 w - - 0 1"), 3),                    # live recapture
+        (chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"), 2),
     ]
-    for board in positions:
-        for depth in (1, 2, 3):
+    for board, max_depth in cases:
+        for depth in range(1, max_depth + 1):
             ab = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0)
             ref = _plain_negamax(board.copy(), depth)
             assert ab == ref, f"depth {depth} {board.fen()}: alpha-beta {ab} != minimax {ref}"
+
+
+#Guard 2: quiescence's own alpha-beta pruning must not change its value.
+def test_quiescence_equals_unpruned():
+    positions = [
+        chess.Board("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1"),               # recapture
+        chess.Board("r3k3/1P6/8/8/8/8/8/4K3 w - - 0 1"),                # promotion/capture
+        chess.Board("4k3/8/3n4/4P3/2B5/8/8/4K3 w - - 0 1"),            # minor-piece captures
+    ]
+    for board in positions:
+        pruned = minimax.quiescence(board.copy(), -minimax.INF, minimax.INF, 0)
+        ref = _ref_quiescence(board.copy(), 0)
+        assert pruned == ref, f"{board.fen()}: pruned {pruned} != unpruned {ref}"
 
 
 def test_finds_mate_in_one():
@@ -61,6 +100,31 @@ def test_mate_score_is_ply_adjusted():
     assert minimax._evaluate_terminal(mate, 1) < minimax._evaluate_terminal(mate, 3)
     #...so after negation the mating side scores the faster mate higher.
     assert -minimax._evaluate_terminal(mate, 1) > -minimax._evaluate_terminal(mate, 3)
+
+
+def test_quiescence_quiet_position_is_static():
+    #With no captures available and not in check, quiescence == static eval.
+    board = chess.Board()
+    q = minimax.quiescence(board, -minimax.INF, minimax.INF, 0)
+    assert q == minimax._sign(board) * eval.eval_board(board)
+
+
+def test_quiescence_resolves_recapture():
+    #White just grabbed a pawn with the queen (Qd5); Black can recapture
+    #...exd5 winning the queen. The static eval says Black is far behind,
+    #but quiescence sees the recapture and reports Black is actually winning.
+    board = chess.Board("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1")
+    naive = minimax._sign(board) * eval.eval_board(board)
+    q = minimax.quiescence(board, -minimax.INF, minimax.INF, 0)
+    assert naive < 0, "static eval should show Black behind on material"
+    assert q > naive, "quiescence should improve Black's score via the recapture"
+    assert q > 0, "after winning the queen Black is winning"
+
+
+def test_quiescence_detects_mate_at_leaf():
+    mate = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+    assert mate.is_checkmate()
+    assert minimax.quiescence(mate, -minimax.INF, minimax.INF, 0) == -minimax.MATE
 
 
 def test_wins_free_material():

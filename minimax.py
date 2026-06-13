@@ -52,6 +52,68 @@ def _ordered_moves(board, pv_move=None):
     return moves
 
 
+#Noisy moves (captures and promotions) ordered best-first for the side to move.
+#These are the only moves quiescence explores in a quiet (not-in-check) position.
+def _ordered_captures(board):
+    sign = _sign(board)
+    moves = [m for m in board.legal_moves
+             if board.is_capture(m) or m.promotion is not None]
+    moves.sort(key=lambda m: sign * eval.eval_move(board, m), reverse=True)
+    return moves
+
+
+#Quiescence search: at a search leaf, keep resolving captures/promotions until
+#the position is "quiet" before evaluating, so the static eval is never read in
+#the middle of a capture sequence (the horizon effect). Fail-soft, like negamax.
+def quiescence(board, alpha, beta, ply=0, deadline=None):
+    if deadline is not None and _time.monotonic() >= deadline:
+        raise _Timeout()
+
+    term = _evaluate_terminal(board, ply)
+    if term is not None:
+        return term
+
+    #In check there is no safe "do nothing" option, so search every evasion
+    #(this also lets a checkmate at the leaf be found and scored).
+    if board.is_check():
+        best = -INF
+        for move in _ordered_moves(board):
+            board.push(move)
+            try:
+                score = -quiescence(board, -beta, -alpha, ply + 1, deadline)
+            finally:
+                board.pop()
+            if score > best:
+                best = score
+                if best > alpha:
+                    alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    #Stand-pat: the side to move is never forced to capture, so the static
+    #evaluation is a lower bound on what it can achieve.
+    best = _sign(board) * eval.eval_board(board)
+    if best > alpha:
+        alpha = best
+    if alpha >= beta:
+        return best
+
+    for move in _ordered_captures(board):
+        board.push(move)
+        try:
+            score = -quiescence(board, -beta, -alpha, ply + 1, deadline)
+        finally:
+            board.pop()
+        if score > best:
+            best = score
+            if best > alpha:
+                alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
 #Fail-soft alpha-beta negamax. With a full window at the root, the returned
 #value equals the true minimax value of the position.
 def negamax(board, depth, alpha, beta, ply=0, deadline=None):
@@ -62,7 +124,7 @@ def negamax(board, depth, alpha, beta, ply=0, deadline=None):
     if term is not None:
         return term
     if depth == 0:
-        return _sign(board) * eval.eval_board(board)
+        return quiescence(board, alpha, beta, ply, deadline)
 
     best = -INF
     for move in _ordered_moves(board):
