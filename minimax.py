@@ -9,6 +9,7 @@ import math
 import time as _time
 
 import chess
+import chess.polyglot
 
 import eval
 
@@ -21,6 +22,17 @@ INF = MATE + 1
 DELTA_MARGIN = 200              #centipawn safety margin for quiescence delta pruning
 
 nodes = 0                       #positions visited in the current search
+
+#Transposition table: zobrist key -> (depth, value, flag, best_move).
+#Values are stored relative to the node (mate scores ply-adjusted) so entries
+#are independent of where in the tree the position was reached.
+_EXACT, _LOWER, _UPPER = 0, 1, 2
+_MAX_PLY = 256
+_tt = {}
+#Move-ordering heuristics, reset per search: two killer moves per ply and a
+#(color, piece, to-square) -> cutoff-weight history table.
+_killers = [[None, None] for _ in range(_MAX_PLY)]
+_history = {}
 
 
 class _Timeout(Exception):
@@ -45,15 +57,56 @@ def _evaluate_terminal(board, ply):
 
 
 #Order moves best-first for the side to move to improve alpha-beta pruning.
-#eval_move is a white-relative delta, so scale by the side's sign.
-def _ordered_moves(board, pv_move=None):
+#Tiers (high to low): the hint move (TT/PV) first, then captures/promotions by
+#eval_move delta, then killer moves, then quiet moves by history score.
+def _ordered_moves(board, hint_move=None, ply=None):
     sign = _sign(board)
-    moves = list(board.legal_moves)
-    moves.sort(key=lambda m: sign * eval.eval_move(board, m), reverse=True)
-    if pv_move is not None and pv_move in moves:
-        moves.remove(pv_move)
-        moves.insert(0, pv_move)
-    return moves
+    killers = _killers[ply] if (ply is not None and ply < _MAX_PLY) else ()
+
+    def score(m):
+        if hint_move is not None and m == hint_move:
+            return 3_000_000
+        if board.is_capture(m) or m.promotion is not None:
+            return 2_000_000 + sign * eval.eval_move(board, m)
+        if m in killers:
+            return 1_000_000
+        piece = board.piece_at(m.from_square)
+        return min(_history.get((piece.color, piece.piece_type, m.to_square), 0), 999_999)
+
+    return sorted(board.legal_moves, key=score, reverse=True)
+
+
+#Record a quiet move that caused a beta cutoff: keep two killers per ply and
+#weight history by depth squared (deeper cutoffs are stronger evidence).
+def _record_killer(move, ply):
+    if ply < _MAX_PLY and _killers[ply][0] != move:
+        _killers[ply][1] = _killers[ply][0]
+        _killers[ply][0] = move
+
+
+def _record_history(board, move, depth):
+    piece = board.piece_at(move.from_square)
+    if piece is not None:
+        key = (piece.color, piece.piece_type, move.to_square)
+        _history[key] = _history.get(key, 0) + depth * depth
+
+
+#Mate scores encode distance from the root; convert to/from node-relative so a
+#transposition-table entry is valid wherever the position recurs.
+def _tt_store_score(score, ply):
+    if score >= MATE_THRESHOLD:
+        return score + ply
+    if score <= -MATE_THRESHOLD:
+        return score - ply
+    return score
+
+
+def _tt_load_score(score, ply):
+    if score >= MATE_THRESHOLD:
+        return score - ply
+    if score <= -MATE_THRESHOLD:
+        return score + ply
+    return score
 
 
 #Noisy moves (captures and promotions) ordered best-first for the side to move.
@@ -139,14 +192,33 @@ def quiescence(board, alpha, beta, ply=0, deadline=None, delta=True):
     return best
 
 
-#Fail-soft alpha-beta negamax. With a full window at the root, the returned
-#value equals the true minimax value of the position (when delta=False; delta
-#pruning in the quiescence leaf is heuristic and may change the value slightly).
-def negamax(board, depth, alpha, beta, ply=0, deadline=None, delta=True):
+#Fail-soft alpha-beta negamax with a transposition table. With a full window at
+#the root, the returned value equals the true minimax value of the position
+#(when delta=False; delta pruning in the quiescence leaf is heuristic and may
+#change the value slightly). use_tt=False disables the table for exact, history-
+#independent searches (used by the correctness tests).
+def negamax(board, depth, alpha, beta, ply=0, deadline=None, delta=True, use_tt=True):
     global nodes
     if deadline is not None and _time.monotonic() >= deadline:
         raise _Timeout()
     nodes += 1
+
+    alpha_orig = alpha
+    key = None
+    tt_move = None
+    if use_tt:
+        key = chess.polyglot.zobrist_hash(board)
+        entry = _tt.get(key)
+        if entry is not None:
+            e_depth, e_value, e_flag, tt_move = entry
+            if e_depth >= depth:
+                val = _tt_load_score(e_value, ply)
+                if e_flag == _EXACT:
+                    return val
+                if e_flag == _LOWER and val >= beta:
+                    return val
+                if e_flag == _UPPER and val <= alpha:
+                    return val
 
     term = _evaluate_terminal(board, ply)
     if term is not None:
@@ -155,18 +227,34 @@ def negamax(board, depth, alpha, beta, ply=0, deadline=None, delta=True):
         return quiescence(board, alpha, beta, ply, deadline, delta)
 
     best = -INF
-    for move in _ordered_moves(board):
+    best_move = None
+    for move in _ordered_moves(board, tt_move, ply):
         board.push(move)
         try:
-            score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, deadline, delta)
+            score = -negamax(board, depth - 1, -beta, -alpha, ply + 1, deadline, delta, use_tt)
         finally:
             board.pop()         #always restore, even when _Timeout unwinds
         if score > best:
             best = score
+            best_move = move
             if best > alpha:
                 alpha = best
         if alpha >= beta:
+            if not board.is_capture(move) and move.promotion is None:
+                _record_killer(move, ply)
+                _record_history(board, move, depth)
             break
+
+    if use_tt:
+        if best <= alpha_orig:
+            flag = _UPPER
+        elif best >= beta:
+            flag = _LOWER
+        else:
+            flag = _EXACT
+        prev = _tt.get(key)
+        if prev is None or prev[0] <= depth:       #depth-preferred replacement
+            _tt[key] = (depth, _tt_store_score(best, ply), flag, best_move)
     return best
 
 
@@ -174,7 +262,7 @@ def negamax(board, depth, alpha, beta, ply=0, deadline=None, delta=True):
 #pv_move (the previous iteration's best) is tried first.
 def search_root(board, depth, deadline=None, pv_move=None):
     alpha, beta = -INF, INF
-    moves = _ordered_moves(board, pv_move)
+    moves = _ordered_moves(board, pv_move, 0)
     best_move = moves[0]
     best_score = -INF
     for move in moves:
@@ -195,8 +283,12 @@ def search_root(board, depth, deadline=None, pv_move=None):
 #depth caps the maximum search depth; time is the budget in seconds
 #(pass math.inf for a pure fixed-depth search).
 def bestMove(board, depth=64, time=default_movetime):
-    global nodes
+    global nodes, _tt, _history
     nodes = 0
+    _tt = {}                    #table persists across deepening iterations, not searches
+    _history = {}
+    for k in _killers:
+        k[0] = k[1] = None
     legal = list(board.legal_moves)
     if not legal:
         return "0000"

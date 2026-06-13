@@ -62,8 +62,10 @@ def test_alpha_beta_equals_minimax():
     ]
     for board, max_depth in cases:
         for depth in range(1, max_depth + 1):
-            #delta=False keeps the search exact so it must match plain minimax.
-            ab = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0, delta=False)
+            #delta=False/use_tt=False keep the search exact and history-free so
+            #it must match plain minimax.
+            ab = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0,
+                                 delta=False, use_tt=False)
             ref = _plain_negamax(board.copy(), depth)
             assert ab == ref, f"depth {depth} {board.fen()}: alpha-beta {ab} != minimax {ref}"
 
@@ -87,11 +89,12 @@ def test_quiescence_equals_unpruned():
 def test_delta_pruning_reduces_nodes():
     #Capture-rich middlegame position.
     board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1")
+    #use_tt=False isolates delta pruning's effect from the transposition table.
     minimax.nodes = 0
-    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=False)
+    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=False, use_tt=False)
     nodes_exact = minimax.nodes
     minimax.nodes = 0
-    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=True)
+    minimax.negamax(board.copy(), 3, -minimax.INF, minimax.INF, 0, delta=True, use_tt=False)
     nodes_delta = minimax.nodes
     assert nodes_delta < nodes_exact, f"delta pruning did not cut nodes ({nodes_delta} vs {nodes_exact})"
 
@@ -104,12 +107,49 @@ def test_delta_pruning_keeps_tactics():
     assert minimax.bestMove(mate, depth=3, time=math.inf) == "a1a8"
 
 
+#Guard 3: the transposition table must not change the (exact) search value.
+def test_transposition_table_preserves_value():
+    positions = [
+        chess.Board(),                                                   # start
+        chess.Board("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"),        # endgame
+        chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1"),
+    ]
+    for board in positions:
+        for depth in (1, 2, 3):
+            minimax._tt = {}
+            with_tt = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0,
+                                      delta=False, use_tt=True)
+            without = minimax.negamax(board.copy(), depth, -minimax.INF, minimax.INF, 0,
+                                      delta=False, use_tt=False)
+            assert with_tt == without, f"depth {depth} {board.fen()}: TT {with_tt} != {without}"
+
+
+def test_transposition_table_reduces_nodes():
+    #A position rich in transpositions; the TT should cut the node count.
+    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 1")
+    minimax.nodes = 0
+    minimax.negamax(board.copy(), 4, -minimax.INF, minimax.INF, 0, delta=True, use_tt=False)
+    nodes_no_tt = minimax.nodes
+    minimax._tt = {}
+    minimax.nodes = 0
+    minimax.negamax(board.copy(), 4, -minimax.INF, minimax.INF, 0, delta=True, use_tt=True)
+    nodes_tt = minimax.nodes
+    assert nodes_tt < nodes_no_tt, f"TT did not cut nodes ({nodes_tt} vs {nodes_no_tt})"
+
+
+def test_tt_finds_mate_with_correct_distance():
+    #With the TT on (via bestMove), the back-rank mate is still found.
+    mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
+    assert minimax.bestMove(mate, depth=4, time=math.inf) == "a1a8"
+
+
 def test_finds_mate_in_one():
     #Back-rank mate: White Ra1-a8 is checkmate.
     board = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
     assert minimax.bestMove(board, depth=3, time=math.inf) == "a1a8"
     #The mate is delivered at ply 1, so the root score must be MATE - 1.
-    assert minimax.negamax(board.copy(), 2, -minimax.INF, minimax.INF, 0) == minimax.MATE - 1
+    assert minimax.negamax(board.copy(), 2, -minimax.INF, minimax.INF, 0,
+                           use_tt=False) == minimax.MATE - 1
 
 
 def test_mate_score_is_ply_adjusted():
