@@ -5,6 +5,7 @@
 #Built by Abhinav Brahmarouthu
 
 import sys
+import math
 import chess
 import minimax
 
@@ -58,5 +59,33 @@ while True:
 
     #Start calculating current position
     elif(arg[0] == "go"):
-        move = minimax.bestMove(board, depth=depth)
+        #Parse the integer-valued go parameters the GUI sent
+        params = {}
+        i = 1
+        while i < len(arg):
+            if arg[i] in ("movetime", "depth", "wtime", "btime", "winc", "binc", "nodes"):
+                if i + 1 < len(arg):
+                    try:
+                        params[arg[i]] = int(arg[i + 1])
+                    except ValueError:
+                        pass
+                i += 2
+            else:
+                i += 1
+
+        max_depth = params.get("depth", depth)
+
+        #Decide the time budget (seconds) from the GUI's instructions
+        if "movetime" in params:
+            movetime = params["movetime"] / 1000.0
+        elif "wtime" in params or "btime" in params:
+            remaining = params.get("wtime" if board.turn == chess.WHITE else "btime", 0)
+            inc = params.get("winc" if board.turn == chess.WHITE else "binc", 0)
+            movetime = max(0.05, (remaining / 20.0 + inc / 2.0) / 1000.0)
+        elif "depth" in params:
+            movetime = math.inf     #pure fixed-depth search
+        else:
+            movetime = minimax.default_movetime
+
+        move = minimax.bestMove(board, depth=max_depth, time=movetime)
         print(f"bestmove {move}")
