@@ -201,6 +201,19 @@ def eval_move(board, move):
     else: #Else add value for piece going to new square
         delta += sign * table[move.to_square]
 
+    #Castling also moves the rook; account for its piece-table change.
+    #(Castling is never a capture or promotion.)
+    if board.is_castling(move):
+        if board.is_kingside_castling(move):
+            rookFrom, rookTo = (chess.H1, chess.F1) if sign == 1 else (chess.H8, chess.F8)
+        else:
+            rookFrom, rookTo = (chess.A1, chess.D1) if sign == 1 else (chess.A8, chess.D8)
+        if sign == 1:
+            rookTable = wEndTable[chess.ROOK] if isEndGame else wTable[chess.ROOK]
+        else:
+            rookTable = bEndTable[chess.ROOK] if isEndGame else bTable[chess.ROOK]
+        delta += sign * (rookTable[rookTo] - rookTable[rookFrom])
+
     #Handle captures:
     if board.is_en_passant(move):
         captureSquare = (move.to_square - 8) if sign == 1 else (move.to_square + 8) #Square of captured pawn
