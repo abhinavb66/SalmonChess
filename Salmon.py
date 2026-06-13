@@ -6,15 +6,16 @@
 
 import sys
 import math
-import chess
+import cozy_chess as cc
 import minimax
 
 VERSION = "0.1"
 
 sys.stdout.reconfigure(line_buffering=True)
 
-board = chess.Board()   #new board, change later to accept board from GUI
-depth = 10;             #Constant depth for testing, change later
+board = cc.Board()      #new board, change later to accept board from GUI
+history = []            #position hashes preceding the current one (for repetition)
+depth = 10              #Constant depth for testing, change later
 
 #main loop to monitor for commands from GUI
 while True:
@@ -26,7 +27,7 @@ while True:
     #Respond to request for engine info
     if(arg[0] == "uci"):
         print("id name Salmon" + VERSION)
-        print("id name Abhinav Brahmarouthu")
+        print("id author Abhinav Brahmarouthu")
         print("uciok")
 
     #end program if requested
@@ -45,17 +46,19 @@ while True:
     #Set up requested position
     elif(arg[0] == "position"):
         if(arg[1] == "startpos"):
-            board.reset()
+            board = cc.Board()
             moves_start = 2
         elif(arg[1] == "fen"):
-            board.set_fen(" ".join(arg[2:8]))
+            board = cc.Board.from_fen(" ".join(arg[2:8]))
             moves_start = 8
         else:
             continue #bad command
 
+        history = []
         if len(arg) > moves_start and arg[moves_start] == "moves":
             for move in arg[moves_start + 1:]:
-                board.push_uci(move)
+                history.append(board.hash())
+                board.play(minimax.from_uci(board, move))
 
     #Start calculating current position
     elif(arg[0] == "go"):
@@ -74,18 +77,19 @@ while True:
                 i += 1
 
         max_depth = params.get("depth", depth)
+        white_to_move = board.side_to_move() == cc.Color.White
 
         #Decide the time budget (seconds) from the GUI's instructions
         if "movetime" in params:
             movetime = params["movetime"] / 1000.0
         elif "wtime" in params or "btime" in params:
-            remaining = params.get("wtime" if board.turn == chess.WHITE else "btime", 0)
-            inc = params.get("winc" if board.turn == chess.WHITE else "binc", 0)
+            remaining = params.get("wtime" if white_to_move else "btime", 0)
+            inc = params.get("winc" if white_to_move else "binc", 0)
             movetime = max(0.05, (remaining / 20.0 + inc / 2.0) / 1000.0)
         elif "depth" in params:
             movetime = math.inf     #pure fixed-depth search
         else:
             movetime = minimax.default_movetime
 
-        move = minimax.bestMove(board, depth=max_depth, time=movetime)
+        move = minimax.bestMove(board, depth=max_depth, time=movetime, history=history)
         print(f"bestmove {move}")

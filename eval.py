@@ -1,23 +1,24 @@
-#File containing base values for chess pieces and 
+#File containing base values for chess pieces and
 #scaling those values based on position and game state
 #Inspiration for value scaling based on Tomasz Michniewski:
 #https://www.chessprogramming.org/
 
-import chess
+import cozy_chess as cc
 
 #base value of pieces in centipawns
 pieceVals = {
-    chess.PAWN: 100,
-    chess.KNIGHT: 325,
-    chess.BISHOP: 330,
-    chess.ROOK: 500,
-    chess.QUEEN: 900,
-    chess.KING: 20000 #Somewhat arbitrary value greater than all other pieces combined
+    cc.Piece.Pawn: 100,
+    cc.Piece.Knight: 325,
+    cc.Piece.Bishop: 330,
+    cc.Piece.Rook: 500,
+    cc.Piece.Queen: 900,
+    cc.Piece.King: 20000 #Somewhat arbitrary value greater than all other pieces combined
 }
 
 # PIECE VAL TABLES
-#Piece value tables represent the relative increase or decrease 
-#in a piece's value depending on its position on the board
+#Piece value tables represent the relative increase or decrease
+#in a piece's value depending on its position on the board.
+#Indexed by square 0..63 (a1=0), matching cozy-chess int(square).
 
 pTableW = [
     0,  0,  0,  0,  0,  0,  0,  0,
@@ -106,50 +107,50 @@ kEndTableW = [
     -50, -30, -30, -30, -30, -30, -30, -50]
 kEndTableB = list(reversed(kEndTableW))
 
-#Dictionaries contianing piece table values for each color
+#Dictionaries containing piece table values for each color
 wTable = {
-    chess.PAWN: pTableW,
-    chess.KNIGHT: nTableW,
-    chess.BISHOP: bTableW,
-    chess.ROOK: rTableW,
-    chess.QUEEN: qTable,
-    chess.KING: kTableW
+    cc.Piece.Pawn: pTableW,
+    cc.Piece.Knight: nTableW,
+    cc.Piece.Bishop: bTableW,
+    cc.Piece.Rook: rTableW,
+    cc.Piece.Queen: qTable,
+    cc.Piece.King: kTableW
 }
 
 bTable = {
-    chess.PAWN: pTableB,
-    chess.KNIGHT: nTableB,
-    chess.BISHOP: bTableB,
-    chess.ROOK: rTableB,
-    chess.QUEEN: qTable,
-    chess.KING: kTableB
+    cc.Piece.Pawn: pTableB,
+    cc.Piece.Knight: nTableB,
+    cc.Piece.Bishop: bTableB,
+    cc.Piece.Rook: rTableB,
+    cc.Piece.Queen: qTable,
+    cc.Piece.King: kTableB
 }
 
 wEndTable = {
-    chess.PAWN: pEndTableW,
-    chess.KNIGHT: nTableW,
-    chess.BISHOP: bTableW,
-    chess.ROOK: rTableW,
-    chess.QUEEN: qTable,
-    chess.KING: kEndTableW
+    cc.Piece.Pawn: pEndTableW,
+    cc.Piece.Knight: nTableW,
+    cc.Piece.Bishop: bTableW,
+    cc.Piece.Rook: rTableW,
+    cc.Piece.Queen: qTable,
+    cc.Piece.King: kEndTableW
 }
 
 bEndTable = {
-    chess.PAWN: pEndTableB,
-    chess.KNIGHT: nTableB,
-    chess.BISHOP: bTableB,
-    chess.ROOK: rTableB,
-    chess.QUEEN: qTable,
-    chess.KING: kEndTableB
+    cc.Piece.Pawn: pEndTableB,
+    cc.Piece.Knight: nTableB,
+    cc.Piece.Bishop: bTableB,
+    cc.Piece.Rook: rTableB,
+    cc.Piece.Queen: qTable,
+    cc.Piece.King: kEndTableB
 }
+
+_NONPAWN = (cc.Piece.Knight, cc.Piece.Bishop, cc.Piece.Rook, cc.Piece.Queen)
 
 #Evaluation functions
 
-#Total non-pawn, non-king material on the board (centipawns), used to decide the
-#game phase. The search also tracks this incrementally.
+#Total non-pawn, non-king material on the board (centipawns).
 def nonpawn_material(board):
-    return sum(pieceVals[p.piece_type] for p in board.piece_map().values()
-               if p.piece_type != chess.PAWN and p.piece_type != chess.KING)
+    return sum(pieceVals[p] * len(board.pieces(p)) for p in _NONPAWN)
 
 #Determines if the position is an endgame or not.
 #Endgame when total non-pawn, non-king material on the board is <= 1300 cp
@@ -157,80 +158,16 @@ def nonpawn_material(board):
 def endGame(board):
     return nonpawn_material(board) <= 1300
 
-#Evaluates a position and returns a float. + value is good for white, - for black
+#Evaluates a position and returns a value. + value is good for white, - for black
 def eval_board(board):
-    pieces = board.piece_map()
-    #One scan: material first (to pick the phase), then the piece-square sum.
-    mat = sum(pieceVals[p.piece_type] for p in pieces.values()
-              if p.piece_type != chess.PAWN and p.piece_type != chess.KING)
-    isEndGame = mat <= 1300
-
+    isEndGame = nonpawn_material(board) <= 1300
     total = 0
-    for square, piece in pieces.items():
-        if piece.color == chess.WHITE:
-            table = wEndTable[piece.piece_type] if isEndGame else wTable[piece.piece_type]
-            total += pieceVals[piece.piece_type] + table[square]
-        else:
-            table = bEndTable[piece.piece_type] if isEndGame else bTable[piece.piece_type]
-            total -= pieceVals[piece.piece_type] + table[square]
-
+    for piece in cc.Piece.ALL:
+        val = pieceVals[piece]
+        wt = wEndTable[piece] if isEndGame else wTable[piece]
+        bt = bEndTable[piece] if isEndGame else bTable[piece]
+        for sq in board.colored_pieces(cc.Color.White, piece):
+            total += val + wt[int(sq)]
+        for sq in board.colored_pieces(cc.Color.Black, piece):
+            total -= val + bt[int(sq)]
     return total
-
-#Evaluates the change in position value from a move
-#Assumes move is legal, board is position before move is made.
-#is_endgame may be supplied to skip recomputing the game phase.
-def eval_move(board, move, is_endgame=None):
-    delta = 0
-    isEndGame = endGame(board) if is_endgame is None else is_endgame
-
-    #Subtract value for piece leaving previous square
-    piece = board.piece_at(move.from_square)
-    sign = 1 if piece.color == chess.WHITE else -1
-    if sign == 1:
-        table = wEndTable[piece.piece_type] if isEndGame else wTable[piece.piece_type]
-    else:
-        table = bEndTable[piece.piece_type] if isEndGame else bTable[piece.piece_type]
-    delta -= sign * table[move.from_square]
-
-    #Additional steps for a promotion
-    if move.promotion is not None:
-        delta -= sign * pieceVals[chess.PAWN]
-        promoPiece = move.promotion  #python-chess promotion is a PieceType int, not a Piece
-        if sign == 1:
-            promoTable = wEndTable[promoPiece] if isEndGame else wTable[promoPiece]
-        else:
-            promoTable = bEndTable[promoPiece] if isEndGame else bTable[promoPiece]
-        delta += sign * (pieceVals[promoPiece] + promoTable[move.to_square])
-    else: #Else add value for piece going to new square
-        delta += sign * table[move.to_square]
-
-    #Castling also moves the rook; account for its piece-table change.
-    #(Castling is never a capture or promotion.)
-    if board.is_castling(move):
-        if board.is_kingside_castling(move):
-            rookFrom, rookTo = (chess.H1, chess.F1) if sign == 1 else (chess.H8, chess.F8)
-        else:
-            rookFrom, rookTo = (chess.A1, chess.D1) if sign == 1 else (chess.A8, chess.D8)
-        if sign == 1:
-            rookTable = wEndTable[chess.ROOK] if isEndGame else wTable[chess.ROOK]
-        else:
-            rookTable = bEndTable[chess.ROOK] if isEndGame else bTable[chess.ROOK]
-        delta += sign * (rookTable[rookTo] - rookTable[rookFrom])
-
-    #Handle captures:
-    if board.is_en_passant(move):
-        captureSquare = (move.to_square - 8) if sign == 1 else (move.to_square + 8) #Square of captured pawn
-        if isEndGame:
-            captureTable = pEndTableB if sign == 1 else pEndTableW
-        else:
-            captureTable = pTableB if sign == 1 else pTableW
-        delta += sign * (pieceVals[chess.PAWN] + captureTable[captureSquare])
-    elif board.is_capture(move):
-        capturePiece = board.piece_at(move.to_square)
-        if sign == -1:
-            captureTable = wEndTable[capturePiece.piece_type] if isEndGame else wTable[capturePiece.piece_type]
-        else:
-            captureTable = bEndTable[capturePiece.piece_type] if isEndGame else bTable[capturePiece.piece_type]
-        delta += sign * (pieceVals[capturePiece.piece_type] + captureTable[move.to_square])
-
-    return delta
