@@ -6,6 +6,7 @@ import sys
 import threading
 
 import chess
+import cozy_chess as cc
 from flask import Flask, jsonify, render_template, request
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -114,7 +115,8 @@ def _state_payload():
     board = state["board"]
     last_move = state["history"][-1] if state["history"] else None
     try:
-        eval_cp = salmon_eval.eval_board(board)
+        #The UI keeps a python-chess board; eval works on cozy-chess boards.
+        eval_cp = salmon_eval.eval_board(cc.Board.from_fen(board.fen()))
     except Exception:
         eval_cp = 0
     return {
