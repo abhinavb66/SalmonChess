@@ -83,3 +83,38 @@ python3 test_minimax.py
 - Keep the test suites fast (a few seconds). The un-pruned reference searches
   are exponential, so cap depth per position and prefer sparse positions for
   the deeper cases.
+
+## Roadmap / TODO
+
+Deferred follow-ups, roughly by impact per effort:
+
+### Performance (the Python search loop is now the bottleneck)
+- **Read terminals off the move list** instead of calling `status()` per node.
+  cozy's `status()` runs its own move generation to detect checkmate/stalemate,
+  roughly doubling movegen per node. Generate moves once; an empty list plus
+  `checkers()` distinguishes mate from stalemate. Likely the biggest easy win.
+- **Re-add incremental evaluation** on the cozy board. The migration dropped the
+  incremental eval/`eval_move` threading, so `eval_board` is recomputed at every
+  leaf.
+- **Compiled full-search rewrite** (Cython, or Rust + PyO3 writing the search on
+  top of cozy/shakmaty) — the order-of-magnitude option; only if leaving the
+  Python loop entirely is worth it.
+
+### Strength measurement
+- **Run the full gauntlet** (`gauntlet.py`) for a measured Elo + confidence
+  interval, replacing the current estimate.
+
+### Evaluation & search features (biggest lever on playing strength)
+- Richer evaluation: king safety, pawn structure, mobility, passed pawns.
+- Principal-variation / aspiration windows.
+- Opening book; endgame tablebases.
+
+### Correctness refinements (minor)
+- `_insufficient_material` is simplified: it does not catch same-colored-bishop
+  (KBvKB) draws or KNN nuances that python-chess handles.
+- Repetition is a 2-fold-in-search heuristic (seeded from game history) rather
+  than strict threefold.
+
+### Housekeeping
+- `bench_speed.py`'s old PyPy angle is stale — cozy-chess is a Rust extension, so
+  the CPython-vs-PyPy comparison may not apply (PyPy wheel availability unverified).
