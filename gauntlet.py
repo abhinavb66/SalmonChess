@@ -30,9 +30,15 @@ import chess
 import chess.engine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SALMON = [sys.executable, os.path.join(HERE, "Salmon.py")]
+#Engine under test; GAUNTLET_ENGINE selects the entry script (e.g. SalmonNNUE.py).
+ENGINE_SCRIPT = os.environ.get("GAUNTLET_ENGINE", "Salmon.py")
+SALMON = [sys.executable, os.path.join(HERE, ENGINE_SCRIPT)]
 STOCKFISH = os.environ.get("STOCKFISH_PATH", "/usr/games/stockfish")
-RESULTS = os.path.join(HERE, "gauntlet_results.jsonl")
+#Keep the historical filename for the default engine; suffix others by stem.
+_STEM = os.path.splitext(os.path.basename(ENGINE_SCRIPT))[0]
+RESULTS = os.path.join(HERE, "gauntlet_results.jsonl" if ENGINE_SCRIPT == "Salmon.py"
+                       else f"gauntlet_results_{_STEM}.jsonl")
+H2H_RESULTS = os.path.join(HERE, "h2h_results.jsonl")
 
 ANCHORS = [int(x) for x in os.environ.get("GAUNTLET_ANCHORS", "1320,1500,1700,1900").split(",")]
 GAMES_PER_ANCHOR = int(os.environ.get("GAUNTLET_GAMES", "25"))
@@ -202,8 +208,41 @@ def report():
               "dependent; treat this as a ballpark.")
 
 
+#Head-to-head: Salmon vs SalmonNNUE (scripts overridable via H2H_A / H2H_B),
+#alternating colors, reusing play_game with two engine subprocesses.
+def h2h(games=20):
+    script_a = os.environ.get("H2H_A", "Salmon.py")
+    script_b = os.environ.get("H2H_B", "SalmonNNUE.py")
+    eng_a = chess.engine.SimpleEngine.popen_uci([sys.executable, os.path.join(HERE, script_a)])
+    eng_b = chess.engine.SimpleEngine.popen_uci([sys.executable, os.path.join(HERE, script_b)])
+    limit = _salmon_limit()
+    print(f"h2h: {script_a} vs {script_b}, {games} games "
+          f"({'time ' + SALMON_TIME + 's' if SALMON_TIME else 'depth ' + str(SALMON_DEPTH)}/move)")
+    a_score = 0.0
+    try:
+        for g in range(games):
+            a_white = (g % 2 == 0)
+            #play_game scores its first engine; pass A as "salmon".
+            score, plies, term = play_game(eng_a, eng_b, a_white, limit, limit)
+            a_score += score
+            with open(H2H_RESULTS, "a") as f:
+                f.write(json.dumps({"a": script_a, "b": script_b, "a_white": a_white,
+                                    "a_score": score, "plies": plies, "term": term}) + "\n")
+            print(f"  game {g + 1}/{games}  {script_a}={'W' if a_white else 'B'}  "
+                  f"score={score}  {plies}p {term}", flush=True)
+    finally:
+        eng_a.quit()
+        eng_b.quit()
+    p = a_score / games
+    diff = _perf(p, 0)
+    print(f"\n{script_a} vs {script_b}: {a_score:.1f}/{games} ({100 * p:.0f}%)"
+          f"  -> Elo diff ~{diff:+.0f} for {script_a}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "report":
         report()
+    elif len(sys.argv) > 1 and sys.argv[1] == "h2h":
+        h2h(int(sys.argv[2]) if len(sys.argv) > 2 else 20)
     else:
         run()
