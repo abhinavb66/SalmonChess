@@ -1,4 +1,6 @@
 .claude/
 __pycache__/
 *.pyc
-gauntlet_results.jsonl
+gauntlet_results*.jsonl
+h2h_results.jsonl
+data/

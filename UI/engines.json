@@ -2,6 +2,13 @@
   {
     "id": "salmon",
     "label": "SalmonChess",
-    "type": "builtin"
+    "type": "builtin",
+    "script": "Salmon.py"
+  },
+  {
+    "id": "salmon_nnue",
+    "label": "SalmonNNUE",
+    "type": "builtin",
+    "script": "SalmonNNUE.py"
   }
 ]

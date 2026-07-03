@@ -142,10 +142,12 @@ async function newGame() {
   const mode = $('#mode').val();
   const human_color = $('#human-color').val();
   const movetime_ms = parseInt($('#movetime').val(), 10) || 1000;
-  const engine_id = $('#engine').val();
+  const engine_white_id = $('#engine-white').val();
+  const engine_black_id = $('#engine-black').val();
   const s = await api('/api/new_game', {
     method: 'POST',
-    body: JSON.stringify({ mode, human_color, movetime_ms, engine_id }),
+    body: JSON.stringify({ mode, human_color, movetime_ms,
+                           engine_white_id, engine_black_id }),
   });
   renderState(s);
   triggerEngineIfNeeded();
@@ -157,10 +159,13 @@ async function loadFen() {
   const mode = $('#mode').val();
   const human_color = $('#human-color').val();
   const movetime_ms = parseInt($('#movetime').val(), 10) || 1000;
+  const engine_white_id = $('#engine-white').val();
+  const engine_black_id = $('#engine-black').val();
   try {
     const s = await api('/api/new_game', {
       method: 'POST',
-      body: JSON.stringify({ mode, human_color, movetime_ms, fen }),
+      body: JSON.stringify({ mode, human_color, movetime_ms, fen,
+                             engine_white_id, engine_black_id }),
     });
     renderState(s);
     triggerEngineIfNeeded();
@@ -195,14 +200,21 @@ $(function () {
   $themeSelect.val(currentTheme);
   $themeSelect.on('change', () => applyTheme($themeSelect.val()));
 
-  // Populate engine selector from server
-  const $engineSelect = $('#engine');
+  // Populate per-side engine selectors from server; default Black to the
+  // NNUE engine (when present) so Salmon vs SalmonNNUE is one click away.
+  const $engineWhite = $('#engine-white');
+  const $engineBlack = $('#engine-black');
   api('/api/engines').then(engines => {
     engines.forEach(({ id, label }) => {
-      $engineSelect.append(`<option value="${id}">${label}</option>`);
+      $engineWhite.append(`<option value="${id}">${label}</option>`);
+      $engineBlack.append(`<option value="${id}">${label}</option>`);
     });
+    if (engines.some(e => e.id === 'salmon_nnue')) {
+      $engineBlack.val('salmon_nnue');
+    }
   }).catch(() => {
-    $engineSelect.append('<option value="salmon">SalmonChess</option>');
+    $engineWhite.append('<option value="salmon">SalmonChess</option>');
+    $engineBlack.append('<option value="salmon">SalmonChess</option>');
   });
 
   applyTheme(currentTheme);

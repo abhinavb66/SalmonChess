@@ -14,6 +14,7 @@ import time as _time
 import cozy_chess as cc
 
 import eval
+from common import to_uci, from_uci, insufficient_material, terminal_result
 
 default_movetime = 1            #seconds per move when the GUI gives no limit
 
@@ -34,39 +35,12 @@ _tt = {}
 _killers = [[None, None] for _ in range(_MAX_PLY)]
 _history = {}
 
-_SQ_NAMES = ["abcdefgh"[i % 8] + str(i // 8 + 1) for i in range(64)]
-_PROMO_CHAR = {cc.Piece.Knight: "n", cc.Piece.Bishop: "b",
-               cc.Piece.Rook: "r", cc.Piece.Queen: "q"}
-
-
 class _Timeout(Exception):
     """Raised internally to unwind the search when the time budget is spent."""
 
 
 def _sign(board):
     return 1 if board.side_to_move() == cc.Color.White else -1
-
-
-#cozy encodes castling as the king moving onto its own rook (e1h1/e1a1). Convert
-#to/from standard UCI (e1g1/e1c1) at the engine boundary only.
-def to_uci(board, move):
-    fs, ts = int(move.from_square), int(move.to_square)
-    if (board.piece_on(move.from_square) == cc.Piece.King
-            and board.piece_on(move.to_square) == cc.Piece.Rook
-            and board.color_on(move.to_square) == board.color_on(move.from_square)):
-        rank = fs - (fs % 8)
-        ts = rank + (6 if (ts % 8) == 7 else 2)     #king lands on g- or c-file
-    s = _SQ_NAMES[fs] + _SQ_NAMES[ts]
-    if move.promotion is not None:
-        s += _PROMO_CHAR[move.promotion]
-    return s
-
-
-def from_uci(board, uci):
-    for m in board.generate_moves():
-        if to_uci(board, m) == uci:
-            return m
-    raise ValueError(f"illegal or unknown move: {uci}")
 
 
 #A move is a capture if the destination is occupied, or it is an en-passant
@@ -92,23 +66,13 @@ def _mvv_lva(board, move):
     return 10 * victim - attacker + promo
 
 
-#cozy's status() does not flag insufficient material, so detect the basic draws.
-def _insufficient_material(board):
-    if (len(board.pieces(cc.Piece.Pawn)) or len(board.pieces(cc.Piece.Rook))
-            or len(board.pieces(cc.Piece.Queen))):
-        return False
-    minors = len(board.pieces(cc.Piece.Knight)) + len(board.pieces(cc.Piece.Bishop))
-    return minors <= 1
-
-
 #Terminal score relative to the side to move, or None if not terminal.
+#Maps common.terminal_result onto the search's ply-adjusted mate convention.
 def _evaluate_terminal(board, ply):
-    st = board.status()
-    if st == cc.GameStatus.Won:         #side to move is checkmated
+    result = terminal_result(board)
+    if result == "loss":                #side to move is checkmated
         return -(MATE - ply)
-    if st == cc.GameStatus.Drawn:       #stalemate or fifty-move
-        return 0
-    if _insufficient_material(board):
+    if result == "draw":
         return 0
     return None
 
