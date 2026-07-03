@@ -13,9 +13,12 @@ import common
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-#Entry points under test: (script, expected id-name prefix).
+#Entry points under test: (script, expected id-name prefix). SalmonNNUE runs
+#on its random-net fallback here (SALMON_NNUE_NET is not required), so the
+#suite never depends on the trained artifact.
 ENGINES = [
     ("Salmon.py", "Salmon"),
+    ("SalmonNNUE.py", "SalmonNNUE"),
 ]
 
 
