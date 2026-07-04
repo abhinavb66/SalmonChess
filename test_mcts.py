@@ -52,6 +52,30 @@ def test_does_not_mutate_board():
     assert board.fen() == before
 
 
+def test_visit_accounting():
+    #Each simulation adds exactly one visit to the root and one to whichever
+    #root child it descends into, so the root's visits equal the number of
+    #simulations and its children's visits sum to the same (no double-counting).
+    board = cc.Board()
+    root = mcts._Node(None, 1.0)
+    root.board = board
+    root.acc = network.Accumulator.from_board(NET, board)
+    seen = {board.hash()}
+    sims = 400
+    for _ in range(sims):
+        mcts._simulate(root, NET, seen)
+        root.visits += 1
+    assert root.visits == sims
+    #The first simulation expands the root without descending, so the children
+    #share one fewer visit than the root.
+    assert sum(c.visits for c in root.children) == sims - 1
+    #Interior nodes are counted once: a visited child's visits equal the sum of
+    #its own children's visits plus its own expansion visit.
+    for c in root.children:
+        if c.children:
+            assert c.visits == sum(g.visits for g in c.children) + 1
+
+
 def test_time_budget():
     board = cc.Board()
     start = _time.monotonic()
@@ -79,6 +103,7 @@ def test_repetition_scores_draw():
     root.acc = network.Accumulator.from_board(NET, board)
     for _ in range(200):
         mcts._simulate(root, NET, seen)
+        root.visits += 1               #drive root exploration, as bestMove does
 
     repeat_child = next(c for c in root.children
                         if common.to_uci(board, c.move) == "a2a3")

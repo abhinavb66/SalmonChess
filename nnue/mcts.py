@@ -131,10 +131,9 @@ def _simulate(node, net, seen):
             seen.discard(h)
 
     v = -v_child                        #flip to this node's perspective
-    best.visits += 1
-    best.value_sum += v
-    node.visits += 1
-    return v
+    best.visits += 1                    #the child gets its single visit here;
+    best.value_sum += v                 #the node's own visit was counted by its
+    return v                            #parent (or, for the root, in bestMove)
 
 
 #Find the best move by MCTS within the time budget. Same call shape as
@@ -167,7 +166,8 @@ def bestMove(board, depth=0, time=default_movetime, history=None, net=None,
 
     while nodes < max_sims:
         _simulate(root, net, seen)
-        nodes += 1
+        root.visits += 1                #the root's own visit (interior/leaf nodes
+        nodes += 1                      #are counted by their parent in _simulate)
         if deadline is not None and _time.monotonic() >= deadline:
             break
 
