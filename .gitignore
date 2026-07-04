@@ -4,3 +4,5 @@ __pycache__/
 gauntlet_results*.jsonl
 h2h_results.jsonl
 data/
+rust/target/
+*.so

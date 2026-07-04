@@ -1,0 +1,17 @@
+[package]
+name = "salmon-nnue-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust hot loop (NNUE inference + PUCT MCTS) for the SalmonNNUE chess engine"
+
+[lib]
+name = "salmon_nnue_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.26", features = ["extension-module", "abi3-py311"] }
+cozy-chess = "0.3.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
