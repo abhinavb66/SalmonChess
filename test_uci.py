@@ -23,8 +23,10 @@ ENGINES = [
 
 
 class _Engine:
-    def __init__(self, script):
+    def __init__(self, script, extra_env=None):
         env = dict(os.environ)
+        if extra_env:
+            env.update(extra_env)
         self.proc = subprocess.Popen(
             [sys.executable, "-u", os.path.join(HERE, script)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
@@ -52,8 +54,8 @@ class _Engine:
             self.proc.kill()
 
 
-def _smoke(script, name_prefix):
-    eng = _Engine(script)
+def _smoke(script, name_prefix, extra_env=None):
+    eng = _Engine(script, extra_env)
     try:
         eng.send("uci")
         line, lines = eng.read_until("uciok")
@@ -90,6 +92,12 @@ def _smoke(script, name_prefix):
 def test_uci_smoke():
     for script, name_prefix in ENGINES:
         _smoke(script, name_prefix)
+
+
+#Keep the pure-Python MCTS backend covered even when the Rust extension is
+#installed (SalmonNNUE prefers Rust otherwise).
+def test_uci_smoke_python_backend():
+    _smoke("SalmonNNUE.py", "SalmonNNUE", extra_env={"SALMON_NNUE_ENGINE": "python"})
 
 
 if __name__ == "__main__":
