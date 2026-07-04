@@ -128,6 +128,64 @@ def test_incremental_accumulator():
                 f"acc drift after {played[-1]} at {board.fen()}: {v_inc} vs {v_full}"
 
 
+#Behavioral parity with the Python MCTS (mirrors test_mcts.py) driven through
+#the Rust search, using the random net (terminal values dominate net noise).
+def test_mcts_finds_mate():
+    if not AVAILABLE:
+        return _skip()
+    eng = _make_engine()
+    import math
+    for fen, want in [("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", "a1a8"),
+                      ("6k1/8/6K1/8/8/8/8/4R3 w - - 0 1", "e1e8")]:
+        mv, _ = eng.search(fen, [], math.inf, 1500)
+        assert mv == want, f"{fen}: got {mv}, want {want}"
+
+
+def test_mcts_legal_and_null():
+    if not AVAILABLE:
+        return _skip()
+    eng = _make_engine()
+    import math
+    for fen in ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "4k3/4q3/8/8/8/8/3PPP2/4K3 w - - 0 1"]:                 # in check
+        board = cc.Board.from_fen(fen)
+        mv, _ = eng.search(fen, [], math.inf, 200)
+        legal = {common.to_uci(board, m) for m in board.generate_moves()}
+        assert mv in legal, f"{fen}: {mv} not legal"
+    mated = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+    assert eng.search(mated, [], 1.0, None)[0] == "0000"
+
+
+def test_mcts_time_budget():
+    if not AVAILABLE:
+        return _skip()
+    eng = _make_engine()
+    import time as _t
+    fen = cc.Board().fen()
+    start = _t.monotonic()
+    mv, sims = eng.search(fen, [], 0.3, None)
+    elapsed = _t.monotonic() - start
+    assert elapsed < 1.0, f"ran {elapsed:.2f}s over a 0.3s budget"
+    assert sims > 0
+
+
+def test_mcts_repetition_scores_draw():
+    if not AVAILABLE:
+        return _skip()
+    eng = _make_engine()
+    board = cc.Board.from_fen("7k/8/8/8/8/8/R7/K7 w - - 0 1")
+    target = next(m for m in board.generate_moves()
+                  if common.to_uci(board, m) == "a2a3")
+    child = board
+    child = cc.Board.from_fen(board.fen())
+    child.play(target)
+    stats = dict((u, (v, vs)) for u, v, vs in
+                 eng.root_stats(board.fen(), [child.hash()], 200))
+    visits, value_sum = stats["a2a3"]
+    assert visits > 0
+    assert value_sum == 0.0, f"repetition child value_sum={value_sum}, expected 0"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

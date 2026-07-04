@@ -2,6 +2,7 @@
 //as the `salmon_nnue_rs` extension module. Mirrors nnue/mcts.py and
 //nnue/network.py semantics exactly so the Python behavioral tests transfer.
 
+mod mcts;
 mod net;
 mod uci;
 
@@ -47,6 +48,26 @@ impl RustEngine {
         let net = Net::from_bytes(&ft_w, &ft_b, &l1_w, &l1_b, &v_w, v_b, &p_w, &p_b)
             .map_err(PyValueError::new_err)?;
         Ok(RustEngine { net })
+    }
+
+    //Best move by MCTS. Returns (uci, simulations). GIL released for the
+    //whole search (RustEngine is frozen; Net is plain owned data).
+    fn search(
+        &self, py: Python<'_>, fen: &str, history: Vec<u64>, movetime_s: f64,
+        max_sims: Option<u64>,
+    ) -> PyResult<(String, u64)> {
+        py.detach(|| mcts::search(&self.net, fen, &history, movetime_s, max_sims))
+            .map(|r| (r.best_uci, r.sims))
+            .map_err(PyValueError::new_err)
+    }
+
+    //Repetition-test hook: root children (uci, visits, value_sum) after `sims`
+    //simulations.
+    fn root_stats(
+        &self, py: Python<'_>, fen: &str, history: Vec<u64>, sims: u64,
+    ) -> PyResult<Vec<(String, u32, f64)>> {
+        py.detach(|| mcts::root_child_stats(&self.net, fen, &history, sims))
+            .map_err(PyValueError::new_err)
     }
 
     //Parity/debug: play the given UCI moves advancing the accumulator

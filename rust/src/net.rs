@@ -15,14 +15,28 @@ pub const POLICY: usize = 64 * 64; // 4096
 const BLEND_POLICY_WEIGHT: f64 = 0.75;
 
 pub struct Net {
-    ft_w: Vec<f32>,   // [768*256] row-major
-    ft_b: Vec<f32>,   // [256]
-    l1_w_t: Vec<f32>, // [32*512] transposed from [512,32]
-    l1_b: Vec<f32>,   // [32]
-    v_w: Vec<f32>,    // [32]
+    ft_w: Vec<f32>,           // [768*256] row-major
+    ft_b: Vec<f32>,           // [256]
+    l1_w_t: Vec<[f32; CONCAT]>, // 32 rows, transposed from [512,32]
+    l1_b: Vec<f32>,           // [32]
+    v_w: Vec<f32>,            // [32]
     v_b: f64,
-    p_w_t: Vec<f32>,  // [4096*512] transposed from [512,4096]
-    p_b: Vec<f32>,    // [4096]
+    p_w_t: Vec<[f32; CONCAT]>, // 4096 rows, transposed from [512,4096]
+    p_b: Vec<f32>,            // [4096]
+}
+
+//Dot product of two fixed-length arrays. Eight independent accumulator lanes
+//let LLVM auto-vectorize (a plain iterator sum cannot, since IEEE float
+//addition is not associative and the compiler may not reorder it).
+#[inline]
+fn dot(a: &[f32; CONCAT], b: &[f32; CONCAT]) -> f32 {
+    let mut acc = [0f32; 8];
+    for (ca, cb) in a.chunks_exact(8).zip(b.chunks_exact(8)) {
+        for l in 0..8 {
+            acc[l] += ca[l] * cb[l];
+        }
+    }
+    acc.iter().sum()
 }
 
 fn decode(bytes: &[u8], n: usize, name: &str) -> Result<Vec<f32>, String> {
@@ -50,16 +64,16 @@ impl Net {
         let p_w_flat = decode(p_w, CONCAT * POLICY, "policy.weight")?;
         let p_b = decode(p_b, POLICY, "policy.bias")?;
 
-        let mut l1_w_t = vec![0f32; L1 * CONCAT]; // [32][512]
+        let mut l1_w_t = vec![[0f32; CONCAT]; L1]; // [32][512]
         for i in 0..CONCAT {
             for j in 0..L1 {
-                l1_w_t[j * CONCAT + i] = l1_w_flat[i * L1 + j];
+                l1_w_t[j][i] = l1_w_flat[i * L1 + j];
             }
         }
-        let mut p_w_t = vec![0f32; POLICY * CONCAT]; // [4096][512]
+        let mut p_w_t = vec![[0f32; CONCAT]; POLICY]; // [4096][512]
         for i in 0..CONCAT {
             for k in 0..POLICY {
-                p_w_t[k * CONCAT + i] = p_w_flat[i * POLICY + k];
+                p_w_t[k][i] = p_w_flat[i * POLICY + k];
             }
         }
         Ok(Net { ft_w, ft_b, l1_w_t, l1_b, v_w, v_b, p_w_t, p_b })
@@ -77,26 +91,17 @@ impl Net {
             x[i] = acc.vals[me][i].clamp(0.0, 1.0);
             x[ACC + i] = acc.vals[1 - me][i].clamp(0.0, 1.0);
         }
-        let mut dot = 0f32;
+        let mut acc_v = 0f32;
         for j in 0..L1 {
-            let row = &self.l1_w_t[j * CONCAT..j * CONCAT + CONCAT];
-            let mut s = self.l1_b[j];
-            for i in 0..CONCAT {
-                s += x[i] * row[i];
-            }
-            dot += s.clamp(0.0, 1.0) * self.v_w[j];
+            let h = (self.l1_b[j] + dot(&x, &self.l1_w_t[j])).clamp(0.0, 1.0);
+            acc_v += h * self.v_w[j];
         }
-        let value = 1.0 / (1.0 + (-(dot as f64 + self.v_b)).exp());
+        let value = 1.0 / (1.0 + (-(acc_v as f64 + self.v_b)).exp());
         (value, x)
     }
 
     pub fn logit(&self, x: &[f32; CONCAT], policy_idx: usize) -> f32 {
-        let row = &self.p_w_t[policy_idx * CONCAT..policy_idx * CONCAT + CONCAT];
-        let mut s = self.p_b[policy_idx];
-        for i in 0..CONCAT {
-            s += x[i] * row[i];
-        }
-        s
+        self.p_b[policy_idx] + dot(x, &self.p_w_t[policy_idx])
     }
 
     //Blended move priors, mirroring mcts._priors (PRIOR_MODE "blend"): softmax
