@@ -86,10 +86,10 @@ class TorchNet(nn.Module):
     def to_net(self):
         with torch.no_grad():
             return network.Net(
-                self.ft.weight[:PAD].numpy(), self.ft_b.numpy(),
-                self.l1_w.numpy(), self.l1_b.numpy(),
-                self.v_w.numpy(), float(self.v_b),
-                self.p_w.numpy(), self.p_b.numpy())
+                self.ft.weight[:PAD].cpu().numpy(), self.ft_b.cpu().numpy(),
+                self.l1_w.cpu().numpy(), self.l1_b.cpu().numpy(),
+                self.v_w.cpu().numpy(), float(self.v_b),
+                self.p_w.cpu().numpy(), self.p_b.cpu().numpy())
 
 
 #Vectorized feature/target construction from the shard arrays (see gen_data).
@@ -143,10 +143,14 @@ def load_data(data_dir, limit=None):
 
 def train(args):
     torch.manual_seed(0)
+    #Train on GPU when available (batches are moved per step); the exported
+    #.npz is identical in format either way — play-time inference stays NumPy.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
     own, opp, value_t, policy_t = load_data(args.data_dir,
                                             20_000 if args.smoke else None)
     n = own.shape[0]
-    model = TorchNet()
+    model = TorchNet().to(device)
     epochs = 2 if args.smoke else args.epochs
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -159,9 +163,10 @@ def train(args):
         total, batches = 0.0, 0
         for i in range(0, n, args.batch):
             b = perm[i:i + args.batch]
-            v_raw, logits = model(own[b], opp[b])
-            loss = (nn.functional.mse_loss(torch.sigmoid(v_raw), value_t[b])
-                    + 0.5 * ce(logits, policy_t[b]))
+            v_raw, logits = model(own[b].to(device), opp[b].to(device))
+            loss = (nn.functional.mse_loss(torch.sigmoid(v_raw),
+                                           value_t[b].to(device))
+                    + 0.5 * ce(logits, policy_t[b].to(device)))
             opt.zero_grad()
             loss.backward()
             opt.step()
