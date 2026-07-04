@@ -1,0 +1,17 @@
+Paste this to the local agent (from inside a clone of the SalmonChess repo):
+
+---
+
+Fetch and read the handoff briefing, then execute its mission:
+
+    git fetch origin claude/chess-engines-history-i7lqic
+    git checkout origin/claude/chess-engines-history-i7lqic -- handoff/
+
+Read handoff/README.md, handoff/TASKS.md, and handoff/MEASUREMENTS.md in
+that order, plus CLAUDE.md for project conventions. Then work the tasks in
+TASKS.md top to bottom: (1) rebase branch claude/salmon-nnue-rust onto main
+and land it green, (2) remeasure engine strength with the v2 net and update
+draft PR #9, (3) train a v3 net gated by measurement. Follow the ground
+rules in README.md — especially the branch discipline and the
+single-worker measurement protocol. Don't commit the handoff/ folder to
+any work branch (git restore/rm it after reading).
