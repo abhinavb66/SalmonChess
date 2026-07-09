@@ -6,3 +6,5 @@ h2h_results.jsonl
 data/
 rust/target/
 *.so
+nets/salmon_nnue_dev.npz
+nets/smoke.npz

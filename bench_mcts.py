@@ -10,8 +10,8 @@ import cozy_chess as cc
 
 from nnue import mcts, network, rust_engine
 
-_NET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "nets", "salmon_nnue.npz")
+_NET_PATH = os.environ.get("SALMON_NNUE_NET") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "nets", "salmon_nnue_v3.npz")
 net = network.Net.load(_NET_PATH) if os.path.exists(_NET_PATH) \
     else network.make_random_net(0)
 print("net:", _NET_PATH if os.path.exists(_NET_PATH) else "random (untrained)")
