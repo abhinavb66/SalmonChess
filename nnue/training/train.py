@@ -7,7 +7,12 @@
 #
 #Run from the repo root:
 #  python3 -m nnue.training.train --smoke          #1 tiny run, asserts learning
-#  python3 -m nnue.training.train --epochs 20 --out nets/salmon_nnue.npz
+#  python3 -m nnue.training.train --epochs 20 --out nets/salmon_nnue_v4.npz
+#
+#Nets are versioned artifacts (nets/README.md): a candidate exports to the
+#gitignored nets/salmon_nnue_dev.npz (the default when --out is omitted) and
+#is only committed as the next nets/salmon_nnue_vN.npz once it measures
+#better (gauntlet + h2h), updating _DEFAULT_NET in SalmonNNUE.py to match.
 
 import argparse
 import glob
@@ -185,7 +190,7 @@ def train(args):
         print("smoke OK: loss decreased")
 
     out = args.out or (os.path.join(REPO, "nets", "smoke.npz") if args.smoke
-                       else os.path.join(REPO, "nets", "salmon_nnue.npz"))
+                       else os.path.join(REPO, "nets", "salmon_nnue_dev.npz"))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     model.to_net().save(out)
     print(f"exported {out}")

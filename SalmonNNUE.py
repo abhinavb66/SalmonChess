@@ -1,8 +1,9 @@
 #UCI entry point for SalmonNNUE: an NNUE-style value+policy network driving a
 #Monte Carlo Tree Search (see nnue/network.py and nnue/mcts.py).
 #
-#The network is loaded from $SALMON_NNUE_NET, else nets/salmon_nnue.npz, else
-#a fixed-seed random net (so the engine boots before a trained net exists).
+#The network is loaded from $SALMON_NNUE_NET, else the current default version
+#below (see nets/README.md for the version history), else a fixed-seed random
+#net (so the engine boots before a trained net exists).
 
 import functools
 import os
@@ -14,7 +15,7 @@ from nnue import mcts, network, rust_engine
 VERSION = "0.1"
 
 _DEFAULT_NET = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "nets", "salmon_nnue.npz")
+                            "nets", "salmon_nnue_v3.npz")
 
 
 def _load_net():

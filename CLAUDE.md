@@ -36,8 +36,10 @@ and both are playable (and pit-able against each other) in the local web UI.
   piece-square tables (separate middlegame/endgame tables for pawns/kings).
   `eval_board(board)` is White-relative (+ favors White).
 - `SalmonNNUE.py` — thin entry point; loads the net from `$SALMON_NNUE_NET`,
-  else `nets/salmon_nnue.npz`, else fixed-seed random weights (bootable
-  before training).
+  else the current default version (`_DEFAULT_NET`), else fixed-seed random
+  weights (bootable before training). Trained nets are versioned artifacts
+  (`nets/salmon_nnue_vN.npz`, history in `nets/README.md`); bumping the
+  default is part of committing a new net.
 - `nnue/network.py` — 768-feature per-perspective encoding (piece x color x
   square, stm-mirrored), `[768,256]` shared-weight accumulator, 512-concat ->
   L1[512,32] -> sigmoid value head, plus a [512,4096] from-to policy head.
@@ -131,11 +133,14 @@ Training needs torch (CPU wheel is fine):
 pip install -r requirements-train.txt --index-url https://download.pytorch.org/whl/cpu
 python3 -m nnue.training.gen_data     # resumable; GEN_SHARDS/GEN_SHARD_SIZE/GEN_SF_DEPTH env
 python3 -m nnue.training.train --smoke     # quick sanity run
-python3 -m nnue.training.train --epochs 20 --out nets/salmon_nnue.npz
+python3 -m nnue.training.train --epochs 20     # exports nets/salmon_nnue_dev.npz
 ```
 
 Strength: `GAUNTLET_ENGINE=SalmonNNUE.py python3 gauntlet.py` (vs Stockfish
 UCI_Elo anchors) and `python3 gauntlet.py h2h 20` (Salmon vs SalmonNNUE).
+Measure a candidate via `SALMON_NNUE_NET=nets/salmon_nnue_dev.npz`; commit it
+only if it beats the current default, as the next `nets/salmon_nnue_vN.npz`
+(update `_DEFAULT_NET` in `SalmonNNUE.py` and `nets/README.md` with it).
 
 ### Testing notes
 
