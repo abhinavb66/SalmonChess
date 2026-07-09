@@ -13,6 +13,8 @@ correctness oracle, for the web UI, and for the training pipeline):
   evaluation. ~2000 Elo measured vs Stockfish UCI_Elo anchors.
 - **SalmonNNUE** (`SalmonNNUE.py`) — NNUE-style value+policy network driving
   a Monte Carlo Tree Search (an Lc0-shaped search with an NNUE-style net).
+  Ships a Rust hot loop (`rust/`) that the engine prefers when built, with a
+  pure-Python fallback so the repo works without a Rust toolchain.
 
 Both speak UCI on stdin/stdout through the shared front end in `common.py`,
 and both are playable (and pit-able against each other) in the local web UI.
@@ -44,6 +46,12 @@ and both are playable (and pit-able against each other) in the local web UI.
 - `nnue/mcts.py` — PUCT tree search: policy priors (`PRIOR_MODE`
   policy/heuristic/blend), value-head leaf evaluation, terminal caching,
   2-fold path repetition seeded from game history, time- or sims-capped.
+- `rust/` — a Rust re-implementation of the NNUE inference + MCTS as a PyO3
+  extension (`salmon_nnue_rs`), mirroring `nnue/mcts.py` and
+  `nnue/network.py` semantics exactly (parity-tested). ~30x faster than the
+  Python search on this machine. `nnue/rust_engine.py` adapts it to the
+  `bestMove` contract; `SalmonNNUE.py` uses it when importable, else the
+  Python MCTS (`SALMON_NNUE_ENGINE=python` forces the fallback).
 - `nnue/training/gen_data.py` — parallel, resumable Stockfish labeling of
   sampled positions into `data/shard_*.npz` (gitignored).
 - `nnue/training/train.py` — PyTorch training (torch is training-only;
@@ -95,9 +103,25 @@ python3 test_minimax.py
 python3 test_nnue.py      # feature/accumulator/inference guards
 python3 test_mcts.py
 python3 test_uci.py       # UCI smoke test of both entry points
+python3 test_rust_engine.py  # Rust<->Python parity (skips if not built)
 ```
 
-Benchmarks: `bench_speed.py` (alpha-beta nps), `bench_mcts.py` (MCTS sims/s).
+Benchmarks: `bench_speed.py` (alpha-beta nps), `bench_mcts.py` (MCTS sims/s,
+Python vs Rust when built).
+
+### Building the Rust engine (optional, speeds up SalmonNNUE ~30x)
+
+```
+pip install maturin
+cd rust && maturin build --release
+pip install target/wheels/salmon_nnue_rs-*.whl
+```
+
+(`maturin develop` needs a virtualenv; `build` + `pip install` works without
+one.) Binaries are gitignored — the engine falls back to pure Python when the
+extension is absent, so building is never required. The default release build
+is portable; the dot products are hand-vectorized (8 accumulator lanes) so no
+`target-cpu=native` is needed.
 
 ### Training the NNUE net
 
@@ -144,8 +168,10 @@ Deferred follow-ups, roughly by impact per effort:
   cozy/shakmaty) — the order-of-magnitude option.
 
 ### SalmonNNUE
+- **int8/SIMD quantized inference** in the Rust engine (currently float32);
+  the net eval is the remaining per-simulation bottleneck.
 - **Leaf batching + virtual loss** in MCTS (amortize net calls), and **tree
-  reuse across moves**.
+  reuse across moves** (the Rust arena is rebuilt per search).
 - **Bigger training run** (more positions, higher label depth) and net-size
   experiments; measure each net with the gauntlet before committing it.
 - **Underpromotion policy cells** (promotions currently share one from-to

@@ -9,7 +9,7 @@ import os
 import sys
 
 import common
-from nnue import mcts, network
+from nnue import mcts, network, rust_engine
 
 VERSION = "0.1"
 
@@ -28,5 +28,11 @@ def _load_net():
 
 if __name__ == "__main__":
     net = _load_net()
-    common.run_uci_loop("SalmonNNUE" + VERSION, "Abhinav Brahmarouthu",
-                        functools.partial(mcts.bestMove, net=net))
+    #Prefer the Rust engine when built; SALMON_NNUE_ENGINE=python forces the
+    #pure-Python MCTS (used to keep the fallback path tested).
+    if rust_engine.AVAILABLE and os.environ.get("SALMON_NNUE_ENGINE") != "python":
+        bestmove_fn = functools.partial(rust_engine.bestMove,
+                                        engine=rust_engine.make_engine(net))
+    else:
+        bestmove_fn = functools.partial(mcts.bestMove, net=net)
+    common.run_uci_loop("SalmonNNUE" + VERSION, "Abhinav Brahmarouthu", bestmove_fn)

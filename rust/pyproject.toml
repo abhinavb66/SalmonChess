@@ -1,0 +1,11 @@
+[build-system]
+requires = ["maturin>=1.14,<2"]
+build-backend = "maturin"
+
+[project]
+name = "salmon-nnue-rs"
+requires-python = ">=3.11"
+description = "Rust hot loop for SalmonNNUE"
+
+[tool.maturin]
+module-name = "salmon_nnue_rs"
