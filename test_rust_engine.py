@@ -25,12 +25,12 @@ def _skip():
     print("  (salmon_nnue_rs not built - skipped)")
 
 
-def _make_engine():
+def _make_engine(quant=False):
     def b(a):
         return np.ascontiguousarray(a, dtype=np.float32).tobytes()
     return salmon_nnue_rs.RustEngine(
         b(_NET.ft_w), b(_NET.ft_b), b(_NET.l1_w), b(_NET.l1_b),
-        b(_NET.v_w), float(_NET.v_b), b(_NET.p_w), b(_NET.p_b))
+        b(_NET.v_w), float(_NET.v_b), b(_NET.p_w), b(_NET.p_b), quant)
 
 
 #Rust board.hash() must equal cozy_chess_py's over random games — this is what
@@ -102,6 +102,52 @@ def test_inference_parity():
         assert abs(v_py - v_rs) < 1e-4, f"value {fen}: {v_py} vs {v_rs}"
         for uci, p in py.items():
             assert abs(p - rs[uci]) < 1e-5, f"prior {uci} {fen}: {p} vs {rs[uci]}"
+
+
+#The int8 path is approximate by design (u8 activations, i8 weights, per-row
+#scales): assert it tracks the exact f32 engine closely on value and priors —
+#loose enough for quantization error, tight enough to catch a scale/sign bug.
+def test_quant_inference_close():
+    if not AVAILABLE:
+        return _skip()
+    exact = _make_engine(quant=False)
+    quant = _make_engine(quant=True)
+    fens = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1",
+        "r3k2r/8/8/3pP3/8/8/8/R3K2R w KQkq d6 0 1",
+        "4k3/4q3/8/8/8/8/3PPP2/4K3 w - - 0 1",
+    ]
+    for fen in fens:
+        v_f, pri_f = exact.eval_debug(fen)
+        v_q, pri_q = quant.eval_debug(fen)
+        assert abs(v_f - v_q) < 0.03, f"quant value {fen}: {v_f} vs {v_q}"
+        pri_q = dict(pri_q)
+        for uci, p in pri_f:
+            assert abs(p - pri_q[uci]) < 0.03, \
+                f"quant prior {uci} {fen}: {p} vs {pri_q[uci]}"
+
+
+#Quantization must not break search behavior: mate-in-1, legality (incl. in
+#check), null move when mated (mirrors the f32 behavior tests).
+def test_quant_search_behavior():
+    if not AVAILABLE:
+        return _skip()
+    import math
+    eng = _make_engine(quant=True)
+    for fen, want in [("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", "a1a8"),
+                      ("6k1/8/6K1/8/8/8/8/4R3 w - - 0 1", "e1e8")]:
+        mv, _ = eng.search(fen, [], math.inf, 1500)
+        assert mv == want, f"{fen}: got {mv}, want {want}"
+    for fen in ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "4k3/4q3/8/8/8/8/3PPP2/4K3 w - - 0 1"]:
+        board = cc.Board.from_fen(fen)
+        mv, _ = eng.search(fen, [], math.inf, 200)
+        legal = {common.to_uci(board, m) for m in board.generate_moves()}
+        assert mv in legal, f"{fen}: {mv} not legal"
+    mated = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+    assert eng.search(mated, [], 1.0, None)[0] == "0000"
 
 
 #The Rust incremental accumulator (Accumulator::play, incl. castling fallback

@@ -39,13 +39,16 @@ struct RustEngine {
 
 #[pymethods]
 impl RustEngine {
-    //Weights are little-endian f32 byte buffers; v_b is an f64 scalar.
+    //Weights are little-endian f32 byte buffers; v_b is an f64 scalar. `quant`
+    //enables int8 inference for the L1/policy matmuls (approximate — see
+    //net.rs); the default false keeps exact f32 parity with the NumPy path.
     #[new]
+    #[pyo3(signature = (ft_w, ft_b, l1_w, l1_b, v_w, v_b, p_w, p_b, quant=false))]
     fn new(
         ft_w: Vec<u8>, ft_b: Vec<u8>, l1_w: Vec<u8>, l1_b: Vec<u8>, v_w: Vec<u8>, v_b: f64,
-        p_w: Vec<u8>, p_b: Vec<u8>,
+        p_w: Vec<u8>, p_b: Vec<u8>, quant: bool,
     ) -> PyResult<Self> {
-        let net = Net::from_bytes(&ft_w, &ft_b, &l1_w, &l1_b, &v_w, v_b, &p_w, &p_b)
+        let net = Net::from_bytes(&ft_w, &ft_b, &l1_w, &l1_b, &v_w, v_b, &p_w, &p_b, quant)
             .map_err(PyValueError::new_err)?;
         Ok(RustEngine { net })
     }
