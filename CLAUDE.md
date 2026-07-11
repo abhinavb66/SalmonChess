@@ -54,6 +54,12 @@ and both are playable (and pit-able against each other) in the local web UI.
   Python search on this machine. `nnue/rust_engine.py` adapts it to the
   `bestMove` contract; `SalmonNNUE.py` uses it when importable, else the
   Python MCTS (`SALMON_NNUE_ENGINE=python` forces the fallback).
+  By default the L1/policy matmuls run int8-quantized (u8 activations x i8
+  weights, per-row scales, AVX2 `maddubs` with runtime detection and an
+  equal-result scalar fallback) for ~25-30% more sims/s; the accumulator and
+  its incremental updates stay f32, so only eval is approximate (~1/127
+  steps). `SALMON_NNUE_QUANT=0` forces exact-f32 inference (used by the
+  parity tests via `make_engine(net, quant=False)` and for A/B runs).
 - `nnue/training/gen_data.py` — parallel, resumable Stockfish labeling of
   sampled positions into `data/shard_*.npz` (gitignored).
 - `nnue/training/train.py` — PyTorch training (torch is training-only;
@@ -173,10 +179,10 @@ Deferred follow-ups, roughly by impact per effort:
   cozy/shakmaty) — the order-of-magnitude option.
 
 ### SalmonNNUE
-- **int8/SIMD quantized inference** in the Rust engine (currently float32);
-  the net eval is the remaining per-simulation bottleneck.
 - **Leaf batching + virtual loss** in MCTS (amortize net calls), and **tree
-  reuse across moves** (the Rust arena is rebuilt per search).
+  reuse across moves** (the Rust arena is rebuilt per search). With int8
+  inference landed, per-sim cost is now mostly board/search work (movegen,
+  terminal checks, arena), so these matter more than further eval speed.
 - **Bigger training run** (more positions, higher label depth) and net-size
   experiments; measure each net with the gauntlet before committing it.
 - **Underpromotion policy cells** (promotions currently share one from-to

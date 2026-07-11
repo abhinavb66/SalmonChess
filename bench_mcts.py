@@ -36,12 +36,13 @@ for label, board in POSITIONS:
     print(f"{label:10s} time={el:6.2f}s  sims/s={2000 / el:>7.0f}")
 
 if rust_engine.AVAILABLE:
-    engine = rust_engine.make_engine(net)
-    print("--- Rust: 20000 simulations ---")
-    for label, board in POSITIONS:
-        el = _timed(lambda: rust_engine.bestMove(board, time=math.inf,
-                                                 engine=engine, max_sims=20000))
-        print(f"{label:10s} time={el:6.2f}s  sims/s={20000 / el:>7.0f}")
+    for quant in (False, True):
+        engine = rust_engine.make_engine(net, quant=quant)
+        print(f"--- Rust ({'int8' if quant else 'f32'}): 20000 simulations ---")
+        for label, board in POSITIONS:
+            el = _timed(lambda: rust_engine.bestMove(board, time=math.inf,
+                                                     engine=engine, max_sims=20000))
+            print(f"{label:10s} time={el:6.2f}s  sims/s={20000 / el:>7.0f}")
 else:
     print("(salmon_nnue_rs not built - skipping Rust benchmark)")
 
@@ -50,6 +51,8 @@ board = cc.Board()
 el = _timed(lambda: mcts.bestMove(board, time=2.0, net=net))
 print(f"python sims={mcts.nodes}  ({mcts.nodes / el:.0f} sims/s)")
 if rust_engine.AVAILABLE:
-    el = _timed(lambda: rust_engine.bestMove(board, time=2.0,
-                                             engine=rust_engine.make_engine(net)))
-    print(f"rust   sims={rust_engine.nodes}  ({rust_engine.nodes / el:.0f} sims/s)")
+    for quant in (False, True):
+        engine = rust_engine.make_engine(net, quant=quant)
+        el = _timed(lambda: rust_engine.bestMove(board, time=2.0, engine=engine))
+        print(f"rust {'int8' if quant else 'f32 '}  sims={rust_engine.nodes}  "
+              f"({rust_engine.nodes / el:.0f} sims/s)")

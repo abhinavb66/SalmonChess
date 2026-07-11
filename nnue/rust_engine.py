@@ -4,6 +4,7 @@
 #extension.
 
 import math
+import os
 
 import numpy as np
 
@@ -20,12 +21,18 @@ nodes = 0                       #simulations of the last search (bench parity)
 
 
 #Build a RustEngine holding the net weights (loaded once per process).
-def make_engine(net):
+#quant=True runs the L1/policy matmuls in int8 (faster, ~1/127-step
+#approximate); the default follows $SALMON_NNUE_QUANT (on unless "0", so
+#SALMON_NNUE_QUANT=0 forces exact-f32 inference for A/B runs). Pass
+#quant=False explicitly where exact NumPy parity matters (tests).
+def make_engine(net, quant=None):
+    if quant is None:
+        quant = os.environ.get("SALMON_NNUE_QUANT", "1") != "0"
     def b(arr):
         return np.ascontiguousarray(arr, dtype=np.float32).tobytes()
     return salmon_nnue_rs.RustEngine(
         b(net.ft_w), b(net.ft_b), b(net.l1_w), b(net.l1_b),
-        b(net.v_w), float(net.v_b), b(net.p_w), b(net.p_b))
+        b(net.v_w), float(net.v_b), b(net.p_w), b(net.p_b), quant)
 
 
 #Same call shape as nnue.mcts.bestMove; engine is a RustEngine from make_engine.

@@ -2,6 +2,12 @@
 //results are parity-testable. The policy weights are transposed at load so
 //each move's logit is one contiguous 512-dot-product — the search only ever
 //needs the legal moves' logits, never all 4096.
+//
+//Optional int8 path (`quant`): the two 512-wide matmuls (L1 + policy) run as
+//u8-activation x i8-weight dot products with i32 accumulation and per-row
+//dequant scales. The feature-transformer accumulator stays f32, so the
+//incremental updates are bit-identical to the float path; only the eval-time
+//matmuls are approximate (~1/127 activation steps).
 
 use cozy_chess::{Board, Color, Move, Piece};
 
@@ -13,6 +19,39 @@ pub const CONCAT: usize = 2 * ACC; // 512
 pub const L1: usize = 32;
 pub const POLICY: usize = 64 * 64; // 4096
 const BLEND_POLICY_WEIGHT: f64 = 0.75;
+//Activation quantization step: x in [0,1] -> u8 in 0..=127. Keeping the max at
+//127 (not 255) means a maddubs i16 pair sum tops out at 2*127*127 = 32258 <
+//i16::MAX, so the AVX2 path cannot saturate and equals the scalar path exactly.
+const XQ: f32 = 127.0;
+
+//Per-row int8 quantization of the L1/policy weight rows. `scale[r]` converts
+//an integer dot product back to the f32 dot: dot_f32 ~= qdot * scale[r].
+struct QuantRows {
+    w: Vec<[i8; CONCAT]>,
+    scale: Vec<f32>,
+}
+
+fn quantize_rows(rows: &[[f32; CONCAT]]) -> QuantRows {
+    let mut w = vec![[0i8; CONCAT]; rows.len()];
+    let mut scale = vec![0f32; rows.len()];
+    for (r, row) in rows.iter().enumerate() {
+        let wmax = row.iter().fold(0f32, |m, v| m.max(v.abs()));
+        if wmax == 0.0 {
+            continue; //all-zero row: wq stays 0, scale irrelevant
+        }
+        let wscale = wmax / 127.0;
+        for i in 0..CONCAT {
+            w[r][i] = (row[i] / wscale).round() as i8;
+        }
+        scale[r] = wscale / XQ;
+    }
+    QuantRows { w, scale }
+}
+
+struct Quant {
+    l1: QuantRows,
+    p: QuantRows,
+}
 
 pub struct Net {
     ft_w: Vec<f32>,           // [768*256] row-major
@@ -23,6 +62,7 @@ pub struct Net {
     v_b: f64,
     p_w_t: Vec<[f32; CONCAT]>, // 4096 rows, transposed from [512,4096]
     p_b: Vec<f32>,            // [4096]
+    quant: Option<Quant>,     // int8 tables for the two big matmuls
 }
 
 //Dot product of two fixed-length arrays. Eight independent accumulator lanes
@@ -37,6 +77,59 @@ fn dot(a: &[f32; CONCAT], b: &[f32; CONCAT]) -> f32 {
         }
     }
     acc.iter().sum()
+}
+
+//u8 x i8 -> i32 dot product, AVX2 when the CPU has it (the build stays
+//portable; detection is at runtime). maddubs pairs u8*i8 into i16 — safe from
+//saturation because activations are <= 127 (see XQ) — then madd widens to i32.
+//The scalar fallback computes the identical integer sum.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn qdot_avx2(x: &[u8; CONCAT], w: &[i8; CONCAT]) -> i32 {
+    use std::arch::x86_64::*;
+    let ones = _mm256_set1_epi16(1);
+    let mut acc = _mm256_setzero_si256();
+    for i in (0..CONCAT).step_by(32) {
+        let xv = _mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i);
+        let wv = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(xv, wv), ones));
+    }
+    let s = _mm_add_epi32(_mm256_extracti128_si256(acc, 1), _mm256_castsi256_si128(acc));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b_01_00_11_10));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b_00_00_00_01));
+    _mm_cvtsi128_si32(s)
+}
+
+fn qdot_scalar(x: &[u8; CONCAT], w: &[i8; CONCAT]) -> i32 {
+    let mut acc = [0i32; 8];
+    for (cx, cw) in x.chunks_exact(8).zip(w.chunks_exact(8)) {
+        for l in 0..8 {
+            acc[l] += cx[l] as i32 * cw[l] as i32;
+        }
+    }
+    acc.iter().sum()
+}
+
+#[inline]
+fn qdot(x: &[u8; CONCAT], w: &[i8; CONCAT]) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::OnceLock;
+        static HAS_AVX2: OnceLock<bool> = OnceLock::new();
+        if *HAS_AVX2.get_or_init(|| is_x86_feature_detected!("avx2")) {
+            return unsafe { qdot_avx2(x, w) };
+        }
+    }
+    qdot_scalar(x, w)
+}
+
+#[inline]
+fn quantize_x(x: &[f32; CONCAT]) -> [u8; CONCAT] {
+    let mut xq = [0u8; CONCAT];
+    for i in 0..CONCAT {
+        xq[i] = (x[i] * XQ + 0.5) as u8; //x is already clamped to [0,1]
+    }
+    xq
 }
 
 fn decode(bytes: &[u8], n: usize, name: &str) -> Result<Vec<f32>, String> {
@@ -54,7 +147,7 @@ impl Net {
     //np.float32).tobytes() produces). Transposes l1 and policy weights.
     pub fn from_bytes(
         ft_w: &[u8], ft_b: &[u8], l1_w: &[u8], l1_b: &[u8], v_w: &[u8], v_b: f64,
-        p_w: &[u8], p_b: &[u8],
+        p_w: &[u8], p_b: &[u8], quant: bool,
     ) -> Result<Net, String> {
         let ft_w = decode(ft_w, FEATURES * ACC, "ft.weight")?;
         let ft_b = decode(ft_b, ACC, "ft.bias")?;
@@ -76,7 +169,11 @@ impl Net {
                 p_w_t[k][i] = p_w_flat[i * POLICY + k];
             }
         }
-        Ok(Net { ft_w, ft_b, l1_w_t, l1_b, v_w, v_b, p_w_t, p_b })
+        let quant = quant.then(|| Quant {
+            l1: quantize_rows(&l1_w_t),
+            p: quantize_rows(&p_w_t),
+        });
+        Ok(Net { ft_w, ft_b, l1_w_t, l1_b, v_w, v_b, p_w_t, p_b, quant })
     }
 
     fn ft_col(&self, feature: usize) -> &[f32] {
@@ -92,9 +189,18 @@ impl Net {
             x[ACC + i] = acc.vals[1 - me][i].clamp(0.0, 1.0);
         }
         let mut acc_v = 0f32;
-        for j in 0..L1 {
-            let h = (self.l1_b[j] + dot(&x, &self.l1_w_t[j])).clamp(0.0, 1.0);
-            acc_v += h * self.v_w[j];
+        if let Some(q) = &self.quant {
+            let xq = quantize_x(&x);
+            for j in 0..L1 {
+                let d = qdot(&xq, &q.l1.w[j]) as f32 * q.l1.scale[j];
+                let h = (self.l1_b[j] + d).clamp(0.0, 1.0);
+                acc_v += h * self.v_w[j];
+            }
+        } else {
+            for j in 0..L1 {
+                let h = (self.l1_b[j] + dot(&x, &self.l1_w_t[j])).clamp(0.0, 1.0);
+                acc_v += h * self.v_w[j];
+            }
         }
         let value = 1.0 / (1.0 + (-(acc_v as f64 + self.v_b)).exp());
         (value, x)
@@ -108,10 +214,21 @@ impl Net {
     //over legal-move policy logits, blended 0.75/0.25 with a uniform +
     //capture/promotion-boost heuristic.
     pub fn move_priors(&self, board: &Board, moves: &[Move], x: &[f32; CONCAT]) -> Vec<f64> {
-        let logits: Vec<f64> = moves
-            .iter()
-            .map(|&m| self.logit(x, uci::policy_index(board, m)) as f64)
-            .collect();
+        let logits: Vec<f64> = if let Some(q) = &self.quant {
+            let xq = quantize_x(x); //once per expand, amortized over the moves
+            moves
+                .iter()
+                .map(|&m| {
+                    let k = uci::policy_index(board, m);
+                    (self.p_b[k] + qdot(&xq, &q.p.w[k]) as f32 * q.p.scale[k]) as f64
+                })
+                .collect()
+        } else {
+            moves
+                .iter()
+                .map(|&m| self.logit(x, uci::policy_index(board, m)) as f64)
+                .collect()
+        };
         let maxl = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let exps: Vec<f64> = logits.iter().map(|l| (l - maxl).exp()).collect();
         let psum: f64 = exps.iter().sum();

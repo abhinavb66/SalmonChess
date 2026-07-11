@@ -1,7 +1,7 @@
 //Board/UCI translation and terminal detection, replicating common.py and
 //nnue/network.py exactly so the Python behavioral tests transfer.
 
-use cozy_chess::{Board, Color, GameStatus, Move, Piece, Square};
+use cozy_chess::{Board, Color, GameStatus, Move, Piece};
 
 //Flatten cozy's callback move generation into a Vec, preserving iteration
 //order (tie-breaks in the search depend on it matching Python's).
