@@ -25,14 +25,19 @@ nodes = 0                       #simulations of the last search (bench parity)
 #approximate); the default follows $SALMON_NNUE_QUANT (on unless "0", so
 #SALMON_NNUE_QUANT=0 forces exact-f32 inference for A/B runs). Pass
 #quant=False explicitly where exact NumPy parity matters (tests).
-def make_engine(net, quant=None):
+#tree_reuse=True carries the search tree across moves within a game (promoted
+#when the position continues the last search); default follows
+#$SALMON_NNUE_TREE_REUSE the same way.
+def make_engine(net, quant=None, tree_reuse=None):
     if quant is None:
         quant = os.environ.get("SALMON_NNUE_QUANT", "1") != "0"
+    if tree_reuse is None:
+        tree_reuse = os.environ.get("SALMON_NNUE_TREE_REUSE", "1") != "0"
     def b(arr):
         return np.ascontiguousarray(arr, dtype=np.float32).tobytes()
     return salmon_nnue_rs.RustEngine(
         b(net.ft_w), b(net.ft_b), b(net.l1_w), b(net.l1_b),
-        b(net.v_w), float(net.v_b), b(net.p_w), b(net.p_b), quant)
+        b(net.v_w), float(net.v_b), b(net.p_w), b(net.p_b), quant, tree_reuse)
 
 
 #Same call shape as nnue.mcts.bestMove; engine is a RustEngine from make_engine.

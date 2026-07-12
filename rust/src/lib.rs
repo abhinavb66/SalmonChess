@@ -6,10 +6,13 @@ mod mcts;
 mod net;
 mod uci;
 
+use std::sync::Mutex;
+
 use cozy_chess::Board;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use mcts::TreeCache;
 use net::{Accumulator, Net};
 
 fn parse_board(fen: &str) -> PyResult<Board> {
@@ -35,6 +38,10 @@ fn legal_moves_uci(fen: &str) -> PyResult<Vec<String>> {
 #[pyclass(frozen)]
 struct RustEngine {
     net: Net,
+    //Tree carried across searches when `tree_reuse` (promoted when the new
+    //position is a played-move + one-reply continuation of the last search).
+    tree_reuse: bool,
+    cache: Mutex<Option<TreeCache>>,
 }
 
 #[pymethods]
@@ -43,25 +50,35 @@ impl RustEngine {
     //enables int8 inference for the L1/policy matmuls (approximate — see
     //net.rs); the default false keeps exact f32 parity with the NumPy path.
     #[new]
-    #[pyo3(signature = (ft_w, ft_b, l1_w, l1_b, v_w, v_b, p_w, p_b, quant=false))]
+    #[pyo3(signature = (ft_w, ft_b, l1_w, l1_b, v_w, v_b, p_w, p_b, quant=false, tree_reuse=false))]
     fn new(
         ft_w: Vec<u8>, ft_b: Vec<u8>, l1_w: Vec<u8>, l1_b: Vec<u8>, v_w: Vec<u8>, v_b: f64,
-        p_w: Vec<u8>, p_b: Vec<u8>, quant: bool,
+        p_w: Vec<u8>, p_b: Vec<u8>, quant: bool, tree_reuse: bool,
     ) -> PyResult<Self> {
         let net = Net::from_bytes(&ft_w, &ft_b, &l1_w, &l1_b, &v_w, v_b, &p_w, &p_b, quant)
             .map_err(PyValueError::new_err)?;
-        Ok(RustEngine { net })
+        Ok(RustEngine { net, tree_reuse, cache: Mutex::new(None) })
     }
 
-    //Best move by MCTS. Returns (uci, simulations). GIL released for the
-    //whole search (RustEngine is frozen; Net is plain owned data).
+    //Best move by MCTS. Returns (uci, simulations run this call). GIL released
+    //for the whole search (RustEngine is frozen; the cache is behind a Mutex).
     fn search(
         &self, py: Python<'_>, fen: &str, history: Vec<u64>, movetime_s: f64,
         max_sims: Option<u64>,
     ) -> PyResult<(String, u64)> {
-        py.detach(|| mcts::search(&self.net, fen, &history, movetime_s, max_sims))
-            .map(|r| (r.best_uci, r.sims))
-            .map_err(PyValueError::new_err)
+        py.detach(|| {
+            let mut cache = self.cache.lock().unwrap();
+            mcts::search(&self.net, fen, &history, movetime_s, max_sims,
+                         &mut cache, self.tree_reuse)
+        })
+        .map(|r| (r.best_uci, r.sims))
+        .map_err(PyValueError::new_err)
+    }
+
+    //Test/debug hook: (arena_len, root_visits) of the tree cached by the last
+    //search, or None (reuse disabled / no search yet).
+    fn cache_stats(&self) -> Option<(usize, u32)> {
+        self.cache.lock().unwrap().as_ref().map(TreeCache::stats)
     }
 
     //Repetition-test hook: root children (uci, visits, value_sum) after `sims`

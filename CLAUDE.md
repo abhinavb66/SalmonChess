@@ -60,6 +60,13 @@ and both are playable (and pit-able against each other) in the local web UI.
   its incremental updates stay f32, so only eval is approximate (~1/127
   steps). `SALMON_NNUE_QUANT=0` forces exact-f32 inference (used by the
   parity tests via `make_engine(net, quant=False)` and for A/B runs).
+  The engine also keeps its search tree across moves by default: after each
+  search it retains the played child's subtree (stats only — per-node
+  boards/accumulators are stripped and rematerialize lazily — capped at 1M
+  nodes, else dropped), and when the next `go` position matches one opponent
+  reply, that subtree is promoted to the root instead of starting cold; any
+  other position misses and searches fresh. `SALMON_NNUE_TREE_REUSE=0`
+  disables it (the stateless tests pass `tree_reuse=False`).
 - `nnue/training/gen_data.py` — parallel, resumable Stockfish labeling of
   sampled positions into `data/shard_*.npz` (gitignored).
 - `nnue/training/train.py` — PyTorch training (torch is training-only;
@@ -144,6 +151,10 @@ python3 -m nnue.training.train --epochs 20     # exports nets/salmon_nnue_dev.np
 
 Strength: `GAUNTLET_ENGINE=SalmonNNUE.py python3 gauntlet.py` (vs Stockfish
 UCI_Elo anchors) and `python3 gauntlet.py h2h 20` (Salmon vs SalmonNNUE).
+Keep the machine awake for unattended runs: if it sleeps mid-game, the UCI
+driver's timer expires across the sleep and the game dies with a spurious
+`TimeoutError` on resume (hold `SetThreadExecutionState(ES_CONTINUOUS |
+ES_SYSTEM_REQUIRED)` for the run's duration; the sweep itself is resumable).
 Measure a candidate via `SALMON_NNUE_NET=nets/salmon_nnue_dev.npz`; commit it
 only if it beats the current default, as the next `nets/salmon_nnue_vN.npz`
 (update `_DEFAULT_NET` in `SalmonNNUE.py` and `nets/README.md` with it).
@@ -179,10 +190,10 @@ Deferred follow-ups, roughly by impact per effort:
   cozy/shakmaty) — the order-of-magnitude option.
 
 ### SalmonNNUE
-- **Leaf batching + virtual loss** in MCTS (amortize net calls), and **tree
-  reuse across moves** (the Rust arena is rebuilt per search). With int8
-  inference landed, per-sim cost is now mostly board/search work (movegen,
-  terminal checks, arena), so these matter more than further eval speed.
+- **Leaf batching + virtual loss** in MCTS (amortize net calls). With int8
+  inference and tree reuse landed, per-sim cost is now mostly board/search
+  work (movegen, terminal checks, arena), so search-side wins matter more
+  than further eval speed.
 - **Bigger training run** (more positions, higher label depth) and net-size
   experiments; measure each net with the gauntlet before committing it.
 - **Underpromotion policy cells** (promotions currently share one from-to

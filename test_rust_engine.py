@@ -25,12 +25,13 @@ def _skip():
     print("  (salmon_nnue_rs not built - skipped)")
 
 
-def _make_engine(quant=False):
+def _make_engine(quant=False, tree_reuse=False):
     def b(a):
         return np.ascontiguousarray(a, dtype=np.float32).tobytes()
     return salmon_nnue_rs.RustEngine(
         b(_NET.ft_w), b(_NET.ft_b), b(_NET.l1_w), b(_NET.l1_b),
-        b(_NET.v_w), float(_NET.v_b), b(_NET.p_w), b(_NET.p_b), quant)
+        b(_NET.v_w), float(_NET.v_b), b(_NET.p_w), b(_NET.p_b), quant,
+        tree_reuse)
 
 
 #Rust board.hash() must equal cozy_chess_py's over random games — this is what
@@ -148,6 +149,49 @@ def test_quant_search_behavior():
         assert mv in legal, f"{fen}: {mv} not legal"
     mated = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
     assert eng.search(mated, [], 1.0, None)[0] == "0000"
+
+
+#Tree reuse must promote the played-move + reply subtree: after searching, the
+#continuation search's cached root keeps its old visits (cold start would have
+#exactly the visits of that one call), while an unrelated position must miss
+#the cache and start cold. Legality throughout a reused game line too.
+def test_tree_reuse():
+    if not AVAILABLE:
+        return _skip()
+    import math
+    eng = _make_engine(tree_reuse=True)
+    board = cc.Board()
+    m1, _ = eng.search(board.fen(), [], math.inf, 2000)
+    board.play(next(m for m in board.generate_moves()
+                    if common.to_uci(board, m) == m1))
+    #A strong reply (from a stateless engine) — well-visited in eng's tree.
+    reply, _ = _make_engine().search(board.fen(), [], math.inf, 400)
+    board.play(next(m for m in board.generate_moves()
+                    if common.to_uci(board, m) == reply))
+
+    mv, sims = eng.search(board.fen(), [], math.inf, 1)
+    legal = {common.to_uci(board, m) for m in board.generate_moves()}
+    assert mv in legal, f"reused search returned illegal {mv}"
+    assert sims == 1
+    #The cache root is the child just played; with a promoted tree it keeps
+    #visits inherited from the first search — one cold simulation could never
+    #give it more than 1.
+    _, cached_visits = eng.cache_stats()
+    assert cached_visits > 1, \
+        f"expected promoted subtree (cached visits > 1), got {cached_visits}"
+
+    #Unrelated position: cache must miss and start cold — no node can exceed
+    #that call's 50 simulations.
+    eng.search("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1", [], math.inf, 50)
+    _, cached_visits = eng.cache_stats()
+    assert cached_visits <= 50, \
+        f"expected cold start (<=50 visits), got {cached_visits}"
+
+    #Reused line still finds a mate-in-1 when it appears.
+    eng2 = _make_engine(tree_reuse=True)
+    eng2.search("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", [], math.inf, 100)
+    mv, _ = eng2.search("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", [], math.inf, 1500)
+    assert mv == "a1a8", f"got {mv}, want a1a8"
 
 
 #The Rust incremental accumulator (Accumulator::play, incl. castling fallback

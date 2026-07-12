@@ -65,6 +65,90 @@ struct Tree {
     arena: Vec<Node>,
 }
 
+//Retention policy for the between-move subtree. The PUCT head start lives in
+//visit counts, so relocate keeps a node's children block only if the node has
+//MIN_KEEP_VISITS — a barely-visited node re-expands on its next visit for one
+//net eval, same as cold, while its own visits/value_sum are always retained.
+//REUSE_MAX_NODES is a hard backstop (~56 bytes/node once states are stripped:
+//1M nodes ~ 56MB): past it, further blocks are truncated the same way. Reuse
+//must be a head start, never a memory liability (an unbounded cache once grew
+//until a gauntlet engine stopped answering within the move budget).
+const MIN_KEEP_VISITS: u32 = 4;
+const REUSE_MAX_NODES: usize = 1_000_000;
+
+//Search tree kept alive between moves for reuse: the cached tree's root is
+//the child whose move we returned (its stats/subtree intact, states stripped),
+//and `board` is the position after that move. If the next search's position
+//matches one of the root's children (i.e. the opponent replied), that subtree
+//is promoted to the new root instead of starting cold.
+pub struct TreeCache {
+    tree: Tree,
+    board: Board,
+}
+
+impl TreeCache {
+    //Test/debug hook: (arena length, root visits) of the cached tree. After a
+    //search that promoted a subtree, the cached root (the child we played)
+    //keeps visits from previous moves — far more than that call's simulations
+    //alone could give it, which is what proves reuse happened.
+    pub fn stats(&self) -> (usize, u32) {
+        (self.tree.arena.len(), self.tree.arena[0].visits)
+    }
+}
+
+//Move the subtree rooted at `root` into a fresh arena, applying the retention
+//policy: every relocated node's state is dropped (boards/accumulators, ~2KB
+//per visited node, rematerialize lazily on the next search exactly as they
+//would in a cold tree), and a node's children block is dropped — children set
+//back to None, so it re-expands on visit — unless the node is well-visited
+//and the arena is under the backstop. The root's block is always kept: it is
+//what try_promote matches the opponent's reply against. Old blocks are
+//disjoint and each reachable node is visited once, so a single forward pass
+//relocates every kept block.
+fn relocate(mut old: Vec<Node>, root: usize) -> Tree {
+    let mut arena = Vec::with_capacity(1024);
+    arena.push(std::mem::replace(&mut old[root], Node::stub(None, 0.0)));
+    let mut i = 0;
+    while i < arena.len() {
+        if let Some((os, cnt)) = arena[i].children {
+            let keep = i == 0
+                || (arena[i].visits >= MIN_KEEP_VISITS
+                    && arena.len() + cnt <= REUSE_MAX_NODES);
+            if keep {
+                let ns = arena.len();
+                for j in 0..cnt {
+                    arena.push(std::mem::replace(&mut old[os + j], Node::stub(None, 0.0)));
+                }
+                arena[i].children = Some((ns, cnt));
+            } else {
+                arena[i].children = None;
+            }
+        }
+        arena[i].state = None;
+        i += 1;
+    }
+    Tree { arena }
+}
+
+//Promote the cached subtree matching `board` (one opponent reply after our
+//played move), if any. The cached root's children enumerate every legal
+//reply, so a legal continuation always has a candidate; anything else (new
+//game, analysis jump) misses and the caller starts a fresh tree.
+fn try_promote(cache: TreeCache, board: &Board) -> Option<Tree> {
+    let (cs, cl) = cache.tree.arena[0].children?;
+    let mut found = None;
+    for ci in 0..cl {
+        let mv = cache.tree.arena[cs + ci].mv.unwrap();
+        let mut b = cache.board.clone();
+        b.play_unchecked(mv);
+        if b.hash() == board.hash() && b.same_position(board) {
+            found = Some(cs + ci);
+            break;
+        }
+    }
+    Some(relocate(cache.tree.arena, found?))
+}
+
 fn terminal_value(t: Terminal) -> f64 {
     match t {
         Terminal::Loss => -1.0,
@@ -150,20 +234,22 @@ fn simulate(tree: &mut Tree, idx: usize, net: &Net, seen: &mut SeenSet) -> f64 {
     v
 }
 
-//Build the root and run simulations until the cap or deadline. Returns the tree
-//(root at index 0, expanded after >=1 simulation).
-fn run(net: &Net, board: &Board, history: &[u64], deadline: Option<Instant>, cap: u64) -> Tree {
-    let acc = Accumulator::from_board(net, board);
-    let mut tree = Tree { arena: Vec::with_capacity(1024) };
-    tree.arena.push(Node {
-        mv: None,
-        prior: 1.0,
-        visits: 0,
-        value_sum: 0.0,
-        children: None,
-        state: Some(Box::new(NodeState { board: board.clone(), acc })),
-        terminal: None,
+//Build (or adopt) the root and run simulations until the cap or deadline.
+//Returns the tree (root at index 0, expanded after >=1 simulation) and the
+//number of simulations run in THIS call (a promoted root keeps old visits).
+fn run(
+    net: &Net, board: &Board, history: &[u64], deadline: Option<Instant>, cap: u64,
+    promoted: Option<Tree>,
+) -> (Tree, u64) {
+    let mut tree = promoted.unwrap_or_else(|| {
+        let mut t = Tree { arena: Vec::with_capacity(1024) };
+        t.arena.push(Node::stub(None, 1.0));
+        t
     });
+    if tree.arena[0].state.is_none() {
+        let acc = Accumulator::from_board(net, board);
+        tree.arena[0].state = Some(Box::new(NodeState { board: board.clone(), acc }));
+    }
 
     let mut seen: SeenSet = SeenSet::default();
     seen.extend(history.iter().copied());
@@ -183,7 +269,7 @@ fn run(net: &Net, board: &Board, history: &[u64], deadline: Option<Instant>, cap
             }
         }
     }
-    tree
+    (tree, sims)
 }
 
 fn deadline_for(movetime_s: f64) -> Option<Instant> {
@@ -199,11 +285,18 @@ pub struct SearchResult {
     pub sims: u64,
 }
 
-//Best move by MCTS within the budget, mirroring mcts.bestMove.
+//Best move by MCTS within the budget, mirroring mcts.bestMove. `cache` (when
+//tree reuse is enabled) carries the previous move's tree in and this move's
+//tree out; pass a `&mut None` throwaway to search statelessly.
 pub fn search(
     net: &Net, fen: &str, history: &[u64], movetime_s: f64, max_sims: Option<u64>,
+    cache: &mut Option<TreeCache>, reuse: bool,
 ) -> Result<SearchResult, String> {
     let board = Board::from_fen(fen, false).map_err(|e| format!("bad fen: {:?}", e))?;
+    //Taken unconditionally: a stale tree from an unrelated position would just
+    //miss in try_promote, and holding it across early returns wastes memory.
+    let promoted = cache.take().filter(|_| reuse).and_then(|c| try_promote(c, &board));
+
     let moves = uci::legal_moves(&board);
     if moves.is_empty() {
         return Ok(SearchResult { best_uci: "0000".to_string(), sims: 0 });
@@ -213,11 +306,11 @@ pub fn search(
     }
 
     let cap = max_sims.unwrap_or(u64::MAX);
-    let tree = run(net, &board, history, deadline_for(movetime_s), cap);
+    let (tree, sims) = run(net, &board, history, deadline_for(movetime_s), cap, promoted);
 
     let (cs, cl) = match tree.arena[0].children {
         Some(c) => c,
-        None => return Ok(SearchResult { best_uci: uci::to_uci(&board, moves[0]), sims: 0 }),
+        None => return Ok(SearchResult { best_uci: uci::to_uci(&board, moves[0]), sims }),
     };
     //Best root move by (visits, q), first max on ties (matches Python's max()).
     let mut best = cs;
@@ -231,8 +324,16 @@ pub fn search(
         }
     }
     let mv = tree.arena[best].mv.unwrap();
-    let sims = tree.arena[0].visits as u64;
-    Ok(SearchResult { best_uci: uci::to_uci(&board, mv), sims })
+    let best_uci = uci::to_uci(&board, mv);
+    if reuse {
+        //Cache only the played child's subtree (stripped, truncated) — the
+        //rest of the tree is dead the moment we commit to this move.
+        let t = relocate(tree.arena, best);
+        let mut after = board.clone();
+        after.play_unchecked(mv);
+        *cache = Some(TreeCache { tree: t, board: after });
+    }
+    Ok(SearchResult { best_uci, sims })
 }
 
 //Root children (uci, visits, value_sum) after exactly `sims` simulations, for
@@ -241,7 +342,7 @@ pub fn root_child_stats(
     net: &Net, fen: &str, history: &[u64], sims: u64,
 ) -> Result<Vec<(String, u32, f64)>, String> {
     let board = Board::from_fen(fen, false).map_err(|e| format!("bad fen: {:?}", e))?;
-    let tree = run(net, &board, history, None, sims);
+    let (tree, _) = run(net, &board, history, None, sims, None);
     let (cs, cl) = match tree.arena[0].children {
         Some(c) => c,
         None => return Ok(vec![]),
