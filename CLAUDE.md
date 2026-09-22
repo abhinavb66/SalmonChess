@@ -193,6 +193,12 @@ Deferred follow-ups, roughly by impact per effort:
 - Repetition is a 2-fold-in-search heuristic (seeded from game history) in
   both engines rather than strict threefold.
 
+### New engines
+- **A drawing engine that out-draws Drawfish** — a third engine tuned to
+  steer games toward draws (for example, a contempt that rewards draws,
+  and eval/search biased toward simplification, fortresses and repetition),
+  measured by draw rate against Drawfish.
+
 ### Housekeeping
 - `bench_speed.py`'s old PyPy angle is stale — cozy-chess is a Rust extension,
   so the CPython-vs-PyPy comparison may not apply.
